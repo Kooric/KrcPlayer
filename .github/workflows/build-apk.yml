@@ -1,0 +1,50 @@
+name: Build and Release KrcPlayer APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build APK with Gradle
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KrcPlayer-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/heads/main')
+        with:
+          tag_name: v1.0.0-${{ github.run_number }}
+          name: KrcPlayer v1.0.0 (Build ${{ github.run_number }})
+          body: |
+            🎉 **KrcPlayer (XPlayerクローン・完全広告なし)** の最新APKが自動ビルドされました！
+            
+            下の `Assets` から `app-debug.apk` をダウンロードして、Android端末にインストールしてください。
+          files: app/build/outputs/apk/debug/app-debug.apk

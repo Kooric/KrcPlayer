@@ -41,10 +41,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/heads/main')
         with:
-          tag_name: v1.0.0-${{ github.run_number }}
-          name: KrcPlayer v1.0.0 (Build ${{ github.run_number }})
+          tag_name: v1.1.0-${{ github.run_number }}
+          name: KrcPlayer v1.1.0 (Build ${{ github.run_number }})
           body: |
-            🎉 **KrcPlayer (XPlayerクローン・完全広告なし)** の最新APKが自動ビルドされました！
+            🎉 **KrcPlayer v1.1.0 (黒×青UI・ミニスクリーン・長押し一括選択・個別音量200%・サムネイル修正)** の最新APKが自動ビルドされました！
             
-            下の `Assets` から `app-debug.apk` をダウンロードして、Android端末にインストールしてください。
+            下の `Assets` から `app-debug.apk` をダウンロードして、そのままタップすると上書き更新（アップデート）できます。
           files: app/build/outputs/apk/debug/app-debug.apk

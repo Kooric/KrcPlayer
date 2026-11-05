@@ -2,7 +2,6 @@ package com.kooric.krcplayer
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -10,27 +9,32 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
-import com.kooric.krcplayer.ui.screens.FolderVideosScreen
+import com.kooric.krcplayer.model.VideoItem
 import com.kooric.krcplayer.ui.screens.HomeScreen
-import com.kooric.krcplayer.ui.screens.PlayerScreen
+import com.kooric.krcplayer.ui.screens.OverlayVideoPlayer
 import com.kooric.krcplayer.ui.screens.SecretVaultScreen
-import com.kooric.krcplayer.ui.theme.KrcPlayerTheme
-import java.net.URLDecoder
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
+import com.kooric.krcplayer.ui.theme.*
 
 class MainActivity : ComponentActivity() {
 
@@ -68,24 +72,61 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (hasPermission) {
-                    KrcAppNavigation()
+                    KrcAppRoot()
                 } else {
-                    // 権限リクエスト表示
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.background)
-                            .padding(24.dp),
+                            .background(PureBlack)
+                            .padding(28.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(SurfaceDark)
+                                .border(1.dp, CardBorder, RoundedCornerShape(24.dp))
+                                .padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .background(DeepBlueSurface, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.VideoLibrary,
+                                    contentDescription = null,
+                                    tint = ElectricBlueGlow,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(20.dp))
                             Text(
-                                text = "動画を再生・管理するために\nストレージへのアクセス許可が必要です。",
-                                color = MaterialTheme.colorScheme.onBackground
+                                text = "動画アクセス権限が必要です",
+                                color = TextPrimary,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
                             )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = { permissionLauncher.launch(permissionToRequest) }) {
-                                Text("権限を許可する")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "端末内の動画をスキャン・再生するためにストレージへのアクセスを許可してください。",
+                                color = TextSecondary,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Button(
+                                onClick = { permissionLauncher.launch(permissionToRequest) },
+                                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlueBright),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                            ) {
+                                Text("権限を許可する", color = Color.White, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -96,60 +137,52 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun KrcAppNavigation() {
+fun KrcAppRoot() {
     val navController = rememberNavController()
 
-    NavHost(navController = navController, startDestination = "home") {
-        composable("home") {
-            HomeScreen(
-                onPlayVideo = { uriString ->
-                    val encoded = URLEncoder.encode(uriString, StandardCharsets.UTF_8.toString())
-                    navController.navigate("player/$encoded")
+    // アプリ全体で維持される再生動画ステート（画面遷移しても止まらない！）
+    var activeVideo by remember { mutableStateOf<VideoItem?>(null) }
+    var isPlayerMinimized by remember { mutableStateOf(false) }
+
+    Box(modifier = Modifier.fillMaxSize().background(PureBlack)) {
+        // 下層：メイン画面 ＆ シークレット画面
+        NavHost(navController = navController, startDestination = "home") {
+            composable("home") {
+                HomeScreen(
+                    currentlyPlayingVideoId = activeVideo?.id,
+                    onPlayVideo = { video ->
+                        activeVideo = video
+                        isPlayerMinimized = false
+                    },
+                    onOpenSecretVault = {
+                        navController.navigate("secret")
+                    }
+                )
+            }
+
+            composable("secret") {
+                SecretVaultScreen(
+                    currentlyPlayingVideoId = activeVideo?.id,
+                    onBack = { navController.popBackStack() },
+                    onPlayVideo = { video ->
+                        activeVideo = video
+                        isPlayerMinimized = false
+                    }
+                )
+            }
+        }
+
+        // 上層：フルスクリーン ⇔ 右下ミニプレイヤー（常駐オーバーレイ）
+        activeVideo?.let { currentVideo ->
+            OverlayVideoPlayer(
+                video = currentVideo,
+                isMinimized = isPlayerMinimized,
+                onMinimizeChange = { minimized ->
+                    isPlayerMinimized = minimized
                 },
-                onOpenFolder = { folderName ->
-                    val encoded = URLEncoder.encode(folderName, StandardCharsets.UTF_8.toString())
-                    navController.navigate("folder/$encoded")
-                },
-                onOpenSecretVault = {
-                    navController.navigate("secret")
-                }
-            )
-        }
-
-        composable(
-            route = "folder/{folderName}",
-            arguments = listOf(navArgument("folderName") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val raw = backStackEntry.arguments?.getString("folderName") ?: ""
-            val folderName = URLDecoder.decode(raw, StandardCharsets.UTF_8.toString())
-            FolderVideosScreen(
-                folderName = folderName,
-                onBack = { navController.popBackStack() },
-                onPlayVideo = { uriString ->
-                    val encoded = URLEncoder.encode(uriString, StandardCharsets.UTF_8.toString())
-                    navController.navigate("player/$encoded")
-                }
-            )
-        }
-
-        composable(
-            route = "player/{videoUri}",
-            arguments = listOf(navArgument("videoUri") { type = NavType.StringType })
-        ) { backStackEntry ->
-            val raw = backStackEntry.arguments?.getString("videoUri") ?: ""
-            val videoUri = URLDecoder.decode(raw, StandardCharsets.UTF_8.toString())
-            PlayerScreen(
-                videoUriString = videoUri,
-                onBack = { navController.popBackStack() }
-            )
-        }
-
-        composable("secret") {
-            SecretVaultScreen(
-                onBack = { navController.popBackStack() },
-                onPlayVideo = { uriString ->
-                    val encoded = URLEncoder.encode(uriString, StandardCharsets.UTF_8.toString())
-                    navController.navigate("player/$encoded")
+                onClosePlayer = {
+                    activeVideo = null
+                    isPlayerMinimized = false
                 }
             )
         }

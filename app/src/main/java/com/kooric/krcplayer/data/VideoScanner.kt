@@ -4,7 +4,6 @@ import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
 import android.provider.MediaStore
-import com.kooric.krcplayer.model.FolderItem
 import com.kooric.krcplayer.model.VideoItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -13,6 +12,9 @@ import java.io.File
 object VideoScanner {
 
     suspend fun getAllVideos(context: Context): List<VideoItem> = withContext(Dispatchers.IO) {
+        val vaultManager = SecretVaultManager(context)
+        val hiddenIds = vaultManager.getHiddenVideoIds()
+
         val videoList = mutableListOf<VideoItem>()
         val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
 
@@ -50,6 +52,8 @@ object VideoScanner {
 
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
+                    if (hiddenIds.contains(id)) continue
+
                     val title = cursor.getString(titleColumn) ?: ""
                     val displayName = cursor.getString(displayNameColumn) ?: ""
                     val path = cursor.getString(dataColumn) ?: ""
@@ -65,9 +69,9 @@ object VideoScanner {
                     )
 
                     val parentFolder = if (path.isNotEmpty()) {
-                        File(path).parentFile?.name ?: "Unknown"
+                        File(path).parentFile?.name ?: "Videos"
                     } else {
-                        "Unknown"
+                        "Videos"
                     }
 
                     videoList.add(
@@ -94,25 +98,20 @@ object VideoScanner {
         videoList
     }
 
-    suspend fun getFolders(context: Context): List<FolderItem> = withContext(Dispatchers.IO) {
-        val videos = getAllVideos(context)
-        val folderMap = mutableMapOf<String, MutableList<VideoItem>>()
+    suspend fun deleteVideos(context: Context, videos: List<VideoItem>): Int = withContext(Dispatchers.IO) {
+        val vaultManager = SecretVaultManager(context)
+        val deletedIds = mutableListOf<Long>()
 
-        videos.forEach { video ->
-            val folder = video.folderName
-            if (!folderMap.containsKey(folder)) {
-                folderMap[folder] = mutableListOf()
+        for (video in videos) {
+            try {
+                context.contentResolver.delete(video.uri, null, null)
+            } catch (_: Exception) {
+                // Scoped storage で直接削除できない場合もアプリリストから隠す
             }
-            folderMap[folder]?.add(video)
+            deletedIds.add(video.id)
         }
 
-        folderMap.map { (folderName, videoItems) ->
-            FolderItem(
-                name = folderName,
-                path = if (videoItems.isNotEmpty()) File(videoItems.first().path).parent ?: "" else "",
-                videoCount = videoItems.size,
-                thumbnailUri = videoItems.firstOrNull()?.uri
-            )
-        }.sortedBy { it.name.lowercase() }
+        vaultManager.addHiddenVideoIds(deletedIds)
+        deletedIds.size
     }
 }

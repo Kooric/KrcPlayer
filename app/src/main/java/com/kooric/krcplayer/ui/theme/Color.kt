@@ -3,19 +3,33 @@ package com.kooric.krcplayer.ui.theme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
 
-val DarkGray = Color(0xFF1E1E1E)
-val LightGray = Color(0xFF2A2A2A)
-val AccentBlue = Color(0xFF3B82F6)
-val AccentBlueLight = Color(0xFF60A5FA)
-val TextPrimary = Color(0xFFF3F4F6)
-val TextSecondary = Color(0xFF9CA3AF)
+// ピュアブラック基調 ＆ エレクトリックブルーアクセント
+val PureBlack = Color(0xFF07090E)
+val SurfaceDark = Color(0xFF11151F)
+val SurfaceElevated = Color(0xFF181E2C)
+val CardBorder = Color(0xFF232C40)
+
+val ElectricBlue = Color(0xFF2563EB)
+val ElectricBlueBright = Color(0xFF3B82F6)
+val ElectricBlueGlow = Color(0xFF60A5FA)
+val DeepBlueSurface = Color(0xFF172554)
+
+val TextPrimary = Color(0xFFF8FAFC)
+val TextSecondary = Color(0xFF94A3B8)
+val DangerRed = Color(0xFFEF4444)
 
 val KrcColorScheme = darkColorScheme(
-    primary = AccentBlue,
-    secondary = AccentBlueLight,
-    background = Color(0xFF121212),
-    surface = DarkGray,
+    primary = ElectricBlueBright,
     onPrimary = Color.White,
+    primaryContainer = DeepBlueSurface,
+    onPrimaryContainer = ElectricBlueGlow,
+    secondary = ElectricBlueGlow,
+    onSecondary = PureBlack,
+    background = PureBlack,
     onBackground = TextPrimary,
-    onSurface = TextPrimary
+    surface = SurfaceDark,
+    onSurface = TextPrimary,
+    surfaceVariant = SurfaceElevated,
+    onSurfaceVariant = TextSecondary,
+    error = DangerRed
 )

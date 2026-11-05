@@ -41,10 +41,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/heads/main')
         with:
-          tag_name: v1.1.0-${{ github.run_number }}
-          name: KrcPlayer v1.1.0 (Build ${{ github.run_number }})
+          tag_name: v1.2.0-${{ github.run_number }}
+          name: KrcPlayer v1.2.0 (Build ${{ github.run_number }})
           body: |
-            🎉 **KrcPlayer v1.1.0 (黒×青UI・ミニスクリーン・長押し一括選択・個別音量200%・サムネイル修正)** の最新APKが自動ビルドされました！
+            🎉 **KrcPlayer v1.2.0 (300%音量ブースト・横3列グリッド・最近再生5件・4桁即時ロック解除・瞬時シークレット移動・固定署名キー対応)** の最新APKが自動ビルドされました！
             
-            下の `Assets` から `app-debug.apk` をダウンロードして、そのままタップすると上書き更新（アップデート）できます。
+            ※ 今回から固定署名キー（`krcplayer.keystore`）を組み込んだため、今回のバージョンを一度インストールした後は、次回以降のアップデートからアンインストール不要で「更新」ボタンのみで上書きインストールが可能になります。
           files: app/build/outputs/apk/debug/app-debug.apk

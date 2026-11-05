@@ -12,11 +12,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,9 +35,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kooric.krcplayer.data.RecentHistoryManager
 import com.kooric.krcplayer.data.SecretVaultManager
 import com.kooric.krcplayer.data.VideoScanner
 import com.kooric.krcplayer.model.VideoItem
+import com.kooric.krcplayer.ui.components.RecentVideoCard
+import com.kooric.krcplayer.ui.components.VideoGridItemCard
 import com.kooric.krcplayer.ui.components.VideoItemCard
 import com.kooric.krcplayer.ui.theme.*
 import kotlinx.coroutines.launch
@@ -49,12 +57,14 @@ enum class VideoSortOption(val label: String) {
 @Composable
 fun HomeScreen(
     currentlyPlayingVideoId: Long?,
+    recentRefreshTick: Int,
     onPlayVideo: (VideoItem) -> Unit,
     onOpenSecretVault: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val vaultManager = remember { SecretVaultManager(context) }
+    val historyManager = remember { RecentHistoryManager(context) }
 
     var allVideos by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -62,8 +72,12 @@ fun HomeScreen(
     var searchQuery by remember { mutableStateOf("") }
     var isSearching by remember { mutableStateOf(false) }
 
-    // 長押し複数選択状態
+    // デフォルトで横3列グリッド表示
+    var isGridView by remember { mutableStateOf(true) }
+
+    // 長押し複数選択状態 ＆ 連打防止フラグ
     var selectedVideoIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var isProcessingAction by remember { mutableStateOf(false) }
     val isSelectionMode = selectedVideoIds.isNotEmpty()
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
@@ -79,9 +93,13 @@ fun HomeScreen(
         reloadVideos()
     }
 
-    // 選択モード中に戻るボタンを押したら選択解除
     BackHandler(enabled = isSelectionMode) {
         selectedVideoIds = emptySet()
+    }
+
+    // 最近再生した動画（最大5件）
+    val recentVideos = remember(allVideos, recentRefreshTick, currentlyPlayingVideoId) {
+        historyManager.getRecentVideos(allVideos)
     }
 
     val displayedVideos = remember(allVideos, sortOption, searchQuery) {
@@ -111,13 +129,10 @@ fun HomeScreen(
             ) {
                 AnimatedContent(
                     targetState = isSelectionMode,
-                    transitionSpec = {
-                        fadeIn() togetherWith fadeOut()
-                    },
+                    transitionSpec = { fadeIn() togetherWith fadeOut() },
                     label = "TopBarMode"
                 ) { selectionActive ->
                     if (selectionActive) {
-                        // ===== 複数選択モード時のトップバー =====
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -162,18 +177,16 @@ fun HomeScreen(
                             }
                         }
                     } else {
-                        // ===== 通常時のトップバー =====
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(64.dp)
-                                .padding(horizontal = 16.dp),
+                                .padding(horizontal = 14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // ロゴアイコン
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .size(34.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(
                                         Brush.linearGradient(
@@ -186,23 +199,32 @@ fun HomeScreen(
                                     imageVector = Icons.Default.PlayArrow,
                                     contentDescription = null,
                                     tint = Color.White,
-                                    modifier = Modifier.size(22.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
-                            Spacer(modifier = Modifier.width(12.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "KrcPlayer",
                                     color = TextPrimary,
-                                    fontSize = 20.sp,
+                                    fontSize = 19.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                                 Text(
-                                    text = "全 ${allVideos.size} 本の動画 • 長押しで一括選択",
+                                    text = "全 ${allVideos.size} 本 • 長押しで一括選択",
                                     color = TextSecondary,
                                     fontSize = 11.sp
+                                )
+                            }
+
+                            // 3列グリッド ⇔ リスト切り替えボタン
+                            IconButton(onClick = { isGridView = !isGridView }) {
+                                Icon(
+                                    imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
+                                    contentDescription = "Toggle View",
+                                    tint = ElectricBlueGlow
                                 )
                             }
 
@@ -214,9 +236,8 @@ fun HomeScreen(
                                 )
                             }
 
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(2.dp))
 
-                            // シークレットフォルダボタン
                             Surface(
                                 onClick = onOpenSecretVault,
                                 color = DeepBlueSurface,
@@ -224,16 +245,16 @@ fun HomeScreen(
                                 modifier = Modifier.border(1.dp, ElectricBlueBright.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Lock,
                                         contentDescription = "Secret Vault",
                                         tint = ElectricBlueGlow,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(15.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(5.dp))
                                     Text(
                                         text = "シークレット",
                                         color = ElectricBlueGlow,
@@ -246,7 +267,6 @@ fun HomeScreen(
                     }
                 }
 
-                // 検索バー
                 AnimatedVisibility(visible = isSearching && !isSelectionMode) {
                     OutlinedTextField(
                         value = searchQuery,
@@ -288,9 +308,7 @@ fun HomeScreen(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
-                                .background(
-                                    if (selected) ElectricBlue else SurfaceDark
-                                )
+                                .background(if (selected) ElectricBlue else SurfaceDark)
                                 .border(
                                     width = 1.dp,
                                     color = if (selected) ElectricBlueGlow else CardBorder,
@@ -342,7 +360,99 @@ fun HomeScreen(
                         fontSize = 15.sp
                     )
                 }
+            } else if (isGridView) {
+                // ===== 横3列グリッド表示（最上部に最近再生した動画5個スライドセクション付き） =====
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = 10.dp,
+                        end = 10.dp,
+                        top = 10.dp,
+                        bottom = if (isSelectionMode) 110.dp else 160.dp
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // 最近再生した動画（最大5個横スライド）
+                    if (recentVideos.isNotEmpty() && searchQuery.isBlank()) {
+                        item(span = { GridItemSpan(3) }) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.History,
+                                        contentDescription = null,
+                                        tint = ElectricBlueGlow,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "最近再生した動画",
+                                        color = TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
+                                ) {
+                                    items(recentVideos, key = { "recent_${it.id}" }) { recentVideo ->
+                                        RecentVideoCard(
+                                            video = recentVideo,
+                                            isCurrentlyPlaying = currentlyPlayingVideoId == recentVideo.id,
+                                            onClick = { onPlayVideo(recentVideo) }
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(color = CardBorder.copy(alpha = 0.4f), thickness = 1.dp)
+                            }
+                        }
+                    }
+
+                    // 横3列動画グリッド
+                    items(
+                        items = displayedVideos,
+                        key = { it.id }
+                    ) { video ->
+                        val isSelected = selectedVideoIds.contains(video.id)
+                        VideoGridItemCard(
+                            video = video,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = isSelected,
+                            isCurrentlyPlaying = currentlyPlayingVideoId == video.id,
+                            onClick = {
+                                if (isSelectionMode) {
+                                    selectedVideoIds = if (isSelected) {
+                                        selectedVideoIds - video.id
+                                    } else {
+                                        selectedVideoIds + video.id
+                                    }
+                                } else {
+                                    onPlayVideo(video)
+                                }
+                            },
+                            onLongClick = {
+                                selectedVideoIds = selectedVideoIds + video.id
+                            },
+                            modifier = Modifier.animateItemPlacement(
+                                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                            )
+                        )
+                    }
+                }
             } else {
+                // ===== 1列リスト表示（最上部に最近再生した動画5個スライドセクション付き） =====
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
@@ -350,6 +460,51 @@ fun HomeScreen(
                         bottom = if (isSelectionMode) 110.dp else 160.dp
                     )
                 ) {
+                    if (recentVideos.isNotEmpty() && searchQuery.isBlank()) {
+                        item {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 6.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.History,
+                                        contentDescription = null,
+                                        tint = ElectricBlueGlow,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "最近再生した動画",
+                                        color = TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                                ) {
+                                    items(recentVideos, key = { "recent_list_${it.id}" }) { recentVideo ->
+                                        RecentVideoCard(
+                                            video = recentVideo,
+                                            isCurrentlyPlaying = currentlyPlayingVideoId == recentVideo.id,
+                                            onClick = { onPlayVideo(recentVideo) }
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(color = CardBorder.copy(alpha = 0.4f), thickness = 1.dp)
+                            }
+                        }
+                    }
+
                     items(
                         items = displayedVideos,
                         key = { it.id }
@@ -403,10 +558,15 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 一括シークレット移動ボタン
+                    // 一括シークレット移動ボタン（連打防止＆瞬時完了）
                     Button(
+                        enabled = !isProcessingAction,
                         onClick = {
+                            if (isProcessingAction) return@Button
+                            isProcessingAction = true
                             val targets = allVideos.filter { selectedVideoIds.contains(it.id) }
+                            // 押した瞬間に選択モードを閉じて2度押しを完全にブロック
+                            selectedVideoIds = emptySet()
                             coroutineScope.launch {
                                 val count = vaultManager.moveVideosToVault(targets)
                                 Toast.makeText(
@@ -414,8 +574,8 @@ fun HomeScreen(
                                     "${count}件の動画をシークレットへ移動しました",
                                     Toast.LENGTH_SHORT
                                 ).show()
-                                selectedVideoIds = emptySet()
                                 reloadVideos()
+                                isProcessingAction = false
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
@@ -438,6 +598,7 @@ fun HomeScreen(
 
                     // 一括削除ボタン
                     Button(
+                        enabled = !isProcessingAction,
                         onClick = { showDeleteConfirmDialog = true },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = DangerRed.copy(alpha = 0.2f),
@@ -461,7 +622,6 @@ fun HomeScreen(
         }
     }
 
-    // 一括削除確認ダイアログ
     if (showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
@@ -479,10 +639,10 @@ fun HomeScreen(
                     onClick = {
                         val targets = allVideos.filter { selectedVideoIds.contains(it.id) }
                         showDeleteConfirmDialog = false
+                        selectedVideoIds = emptySet()
                         coroutineScope.launch {
                             val count = VideoScanner.deleteVideos(context, targets)
                             Toast.makeText(context, "${count}件の動画を削除しました", Toast.LENGTH_SHORT).show()
-                            selectedVideoIds = emptySet()
                             reloadVideos()
                         }
                     },

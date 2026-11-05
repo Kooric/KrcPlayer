@@ -11,10 +11,7 @@ import java.io.File
 
 object VideoScanner {
 
-    suspend fun getAllVideos(context: Context): List<VideoItem> = withContext(Dispatchers.IO) {
-        val vaultManager = SecretVaultManager(context)
-        val hiddenIds = vaultManager.getHiddenVideoIds()
-
+    suspend fun getRawAllVideos(context: Context): List<VideoItem> = withContext(Dispatchers.IO) {
         val videoList = mutableListOf<VideoItem>()
         val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
 
@@ -52,8 +49,6 @@ object VideoScanner {
 
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
-                    if (hiddenIds.contains(id)) continue
-
                     val title = cursor.getString(titleColumn) ?: ""
                     val displayName = cursor.getString(displayNameColumn) ?: ""
                     val path = cursor.getString(dataColumn) ?: ""
@@ -98,6 +93,12 @@ object VideoScanner {
         videoList
     }
 
+    suspend fun getAllVideos(context: Context): List<VideoItem> = withContext(Dispatchers.IO) {
+        val vaultManager = SecretVaultManager(context)
+        val hiddenIds = vaultManager.getHiddenVideoIds()
+        getRawAllVideos(context).filterNot { hiddenIds.contains(it.id) }
+    }
+
     suspend fun deleteVideos(context: Context, videos: List<VideoItem>): Int = withContext(Dispatchers.IO) {
         val vaultManager = SecretVaultManager(context)
         val deletedIds = mutableListOf<Long>()
@@ -106,12 +107,11 @@ object VideoScanner {
             try {
                 context.contentResolver.delete(video.uri, null, null)
             } catch (_: Exception) {
-                // Scoped storage で直接削除できない場合もアプリリストから隠す
             }
             deletedIds.add(video.id)
         }
 
-        vaultManager.addHiddenVideoIds(deletedIds)
+        vaultManager.addDeletedVideoIds(deletedIds)
         deletedIds.size
     }
 }

@@ -30,6 +30,7 @@ import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.kooric.krcplayer.data.RecentHistoryManager
 import com.kooric.krcplayer.model.VideoItem
 import com.kooric.krcplayer.ui.screens.HomeScreen
 import com.kooric.krcplayer.ui.screens.OverlayVideoPlayer
@@ -138,19 +139,23 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun KrcAppRoot() {
+    val context = LocalContext.current
     val navController = rememberNavController()
+    val historyManager = remember { RecentHistoryManager(context) }
 
-    // アプリ全体で維持される再生動画ステート（画面遷移しても止まらない！）
     var activeVideo by remember { mutableStateOf<VideoItem?>(null) }
     var isPlayerMinimized by remember { mutableStateOf(false) }
+    var recentRefreshTick by remember { mutableIntStateOf(0) }
 
     Box(modifier = Modifier.fillMaxSize().background(PureBlack)) {
-        // 下層：メイン画面 ＆ シークレット画面
         NavHost(navController = navController, startDestination = "home") {
             composable("home") {
                 HomeScreen(
                     currentlyPlayingVideoId = activeVideo?.id,
+                    recentRefreshTick = recentRefreshTick,
                     onPlayVideo = { video ->
+                        historyManager.recordPlayedVideo(video.id)
+                        recentRefreshTick++
                         activeVideo = video
                         isPlayerMinimized = false
                     },
@@ -172,7 +177,6 @@ fun KrcAppRoot() {
             }
         }
 
-        // 上層：フルスクリーン ⇔ 右下ミニプレイヤー（常駐オーバーレイ）
         activeVideo?.let { currentVideo ->
             OverlayVideoPlayer(
                 video = currentVideo,

@@ -66,7 +66,7 @@ fun OverlayVideoPlayer(
     val context = LocalContext.current
     val activity = context as? Activity
 
-    // アプリ個別音量 (0.0f ~ 2.0f : 0% ~ 200%)
+    // アプリ個別音量 (0.0f ~ 3.0f : 0% ~ 300% ブースト対応)
     var appVolume by remember { mutableFloatStateOf(1.0f) }
     var loudnessEnhancer by remember { mutableStateOf<LoudnessEnhancer?>(null) }
 
@@ -83,9 +83,9 @@ fun OverlayVideoPlayer(
             .build()
     }
 
-    // 音量をExoPlayerとLoudnessEnhancerに反映する関数
+    // 音量をExoPlayerとLoudnessEnhancerに反映する関数 (0% ~ 300%)
     fun applyAppVolume(vol: Float) {
-        val clamped = vol.coerceIn(0f, 2.0f)
+        val clamped = vol.coerceIn(0f, 3.0f)
         appVolume = clamped
         exoPlayer.volume = clamped.coerceAtMost(1.0f)
 
@@ -96,8 +96,8 @@ fun OverlayVideoPlayer(
                         enabled = true
                     }
                 }
-                // 1.0 ~ 2.0 を 0mB ~ 1500mB にマッピング
-                val gainMb = ((clamped - 1.0f) * 1500).toInt()
+                // 1.0 ~ 3.0 (100% ~ 300%) を 0mB ~ 2500mB にマッピング
+                val gainMb = (((clamped - 1.0f) / 2.0f) * 2500).toInt()
                 loudnessEnhancer?.setTargetGain(gainMb)
                 loudnessEnhancer?.enabled = true
             } else {
@@ -107,7 +107,6 @@ fun OverlayVideoPlayer(
         }
     }
 
-    // 動画切り替え時
     LaunchedEffect(video.uri) {
         val mediaItem = MediaItem.fromUri(video.uri)
         exoPlayer.setMediaItem(mediaItem)
@@ -116,7 +115,6 @@ fun OverlayVideoPlayer(
         applyAppVolume(appVolume)
     }
 
-    // ミニスクリーン化時は画面向き固定を解除
     LaunchedEffect(isMinimized) {
         if (isMinimized) {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -134,7 +132,6 @@ fun OverlayVideoPlayer(
         }
     }
 
-    // フルスクリーン時にスマホの戻るボタンを押したらミニスクリーン化
     BackHandler(enabled = !isMinimized) {
         onMinimizeChange(true)
     }
@@ -149,12 +146,10 @@ fun OverlayVideoPlayer(
     var showVolumeSheet by remember { mutableStateOf(false) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
 
-    // ジェスチャー表示用
     var gestureOverlayTitle by remember { mutableStateOf<String?>(null) }
     var gestureOverlayValue by remember { mutableStateOf<String?>(null) }
     var gestureProgress by remember { mutableFloatStateOf(-1f) }
 
-    // ミニプレイヤーのドラッグ移動オフセット
     var miniOffsetX by remember { mutableFloatStateOf(0f) }
     var miniOffsetY by remember { mutableFloatStateOf(0f) }
 
@@ -167,6 +162,7 @@ fun OverlayVideoPlayer(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     totalDuration = exoPlayer.duration.coerceAtLeast(0L)
+                    applyAppVolume(appVolume)
                 }
             }
         })
@@ -195,7 +191,6 @@ fun OverlayVideoPlayer(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.BottomEnd
     ) {
-        // フルスクリーン ⇔ 右下ミニスクリーンのコンテナ
         val containerModifier = if (isMinimized) {
             Modifier
                 .padding(end = 16.dp, bottom = 24.dp)
@@ -281,13 +276,13 @@ fun OverlayVideoPlayer(
                                         gestureProgress = newB
                                     }
                                 } else {
-                                    // アプリ独自の個別音量 (0% ~ 200%)
-                                    val newVol = (appVolume + deltaRatio * 1.8f).coerceIn(0f, 2.0f)
+                                    // アプリ独自の個別音量 (0% ~ 300% ブースト)
+                                    val newVol = (appVolume + deltaRatio * 2.4f).coerceIn(0f, 3.0f)
                                     applyAppVolume(newVol)
                                     val percent = (newVol * 100).toInt()
-                                    gestureOverlayTitle = if (percent > 100) "アプリ音量 (ブースト)" else "アプリ個別音量"
+                                    gestureOverlayTitle = if (percent > 100) "音量ブースト" else "アプリ個別音量"
                                     gestureOverlayValue = "$percent%"
-                                    gestureProgress = (newVol / 2.0f).coerceIn(0f, 1f)
+                                    gestureProgress = (newVol / 3.0f).coerceIn(0f, 1f)
                                 }
                             }
                         },
@@ -310,7 +305,6 @@ fun OverlayVideoPlayer(
                             .weight(1f)
                             .background(Color.Black)
                             .clickable {
-                                // タップでフルスクリーンに戻る
                                 miniOffsetX = 0f
                                 miniOffsetY = 0f
                                 onMinimizeChange(false)
@@ -330,7 +324,6 @@ fun OverlayVideoPlayer(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        // 左上にフルスクリーン復帰アイコン
                         Box(
                             modifier = Modifier
                                 .align(Alignment.TopStart)
@@ -348,7 +341,6 @@ fun OverlayVideoPlayer(
                         }
                     }
 
-                    // ミニプレイヤー下部コントロールバー
                     LinearProgressIndicator(
                         progress = { if (totalDuration > 0) (currentPosition.toFloat() / totalDuration).coerceIn(0f, 1f) else 0f },
                         modifier = Modifier
@@ -420,7 +412,7 @@ fun OverlayVideoPlayer(
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // ジェスチャーオーバーレイ (音量・輝度・シーク)
+                // ジェスチャーオーバーレイ
                 AnimatedVisibility(
                     visible = gestureOverlayTitle != null,
                     enter = fadeIn() + scaleIn(),
@@ -484,7 +476,7 @@ fun OverlayVideoPlayer(
                                 )
                             )
                     ) {
-                        // 上部バー：「←」を押すと右下ミニスクリーン化して一覧へ戻る！
+                        // 上部バー（不要なサブ文字列は削除してスッキリ表示）
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -499,30 +491,26 @@ fun OverlayVideoPlayer(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "ミニスクリーン化して戻る",
+                                    contentDescription = "Back",
                                     tint = Color.White
                                 )
                             }
 
                             Spacer(modifier = Modifier.width(12.dp))
 
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = video.title,
-                                    color = Color.White,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "← で右下ミニプレイヤーへ縮小",
-                                    color = ElectricBlueGlow,
-                                    fontSize = 11.sp
-                                )
-                            }
+                            Text(
+                                text = video.title,
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
 
-                            // 個別音量ボタン
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            // 個別音量ボタン (0% ~ 300%)
                             Surface(
                                 onClick = { showVolumeSheet = true },
                                 color = DeepBlueSurface.copy(alpha = 0.85f),
@@ -575,7 +563,7 @@ fun OverlayVideoPlayer(
                                 Icon(Icons.Default.AspectRatio, contentDescription = "AspectRatio", tint = Color.White)
                             }
 
-                            // システムPiP (ホーム画面に戻る小窓)
+                            // システムPiP
                             IconButton(onClick = {
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                     val params = PictureInPictureParams.Builder()
@@ -622,7 +610,6 @@ fun OverlayVideoPlayer(
                         }
 
                         if (!isScreenLocked) {
-                            // 中央コントロール（10秒戻し・再生/一時停止・10秒送り）
                             Row(
                                 modifier = Modifier.align(Alignment.Center),
                                 horizontalArrangement = Arrangement.spacedBy(28.dp),
@@ -682,7 +669,6 @@ fun OverlayVideoPlayer(
                                 }
                             }
 
-                            // 下部シークバー＆時間
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -730,19 +716,19 @@ fun OverlayVideoPlayer(
         }
     }
 
-    // アプリ個別音量調整ダイアログ (0% ~ 200%)
+    // アプリ個別音量調整ダイアログ (0% ~ 300% ブースト対応)
     if (showVolumeSheet) {
         AlertDialog(
             onDismissRequest = { showVolumeSheet = false },
             containerColor = SurfaceDark,
             titleContentColor = TextPrimary,
             title = {
-                Text("KrcPlayer 個別音量設定", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("KrcPlayer 音量ブースト設定", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             },
             text = {
                 Column {
                     Text(
-                        text = "スマホ本体のメディア音量とは別に、このプレイヤーだけの音量を 0% 〜 200% で個別調整できます（画面右側の縦スワイプでも調整可能）。",
+                        text = "スマホ本体のメディア音量とは別に、このプレイヤーだけの音量を 0% 〜 300% で個別調整・増幅できます。",
                         color = TextSecondary,
                         fontSize = 13.sp
                     )
@@ -750,7 +736,7 @@ fun OverlayVideoPlayer(
                     Text(
                         text = "現在の音量: ${(appVolume * 100).toInt()}%",
                         color = ElectricBlueGlow,
-                        fontSize = 20.sp,
+                        fontSize = 22.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
@@ -758,7 +744,7 @@ fun OverlayVideoPlayer(
                     Slider(
                         value = appVolume,
                         onValueChange = { applyAppVolume(it) },
-                        valueRange = 0f..2.0f,
+                        valueRange = 0f..3.0f,
                         colors = SliderDefaults.colors(
                             thumbColor = ElectricBlueGlow,
                             activeTrackColor = ElectricBlueBright,
@@ -769,9 +755,10 @@ fun OverlayVideoPlayer(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        TextButton(onClick = { applyAppVolume(0f) }) { Text("0% (ミュート)") }
-                        TextButton(onClick = { applyAppVolume(1.0f) }) { Text("100% (標準)") }
-                        TextButton(onClick = { applyAppVolume(2.0f) }) { Text("200% (最大)") }
+                        TextButton(onClick = { applyAppVolume(0f) }) { Text("0%") }
+                        TextButton(onClick = { applyAppVolume(1.0f) }) { Text("100%") }
+                        TextButton(onClick = { applyAppVolume(2.0f) }) { Text("200%") }
+                        TextButton(onClick = { applyAppVolume(3.0f) }) { Text("300%") }
                     }
                 }
             },
@@ -783,7 +770,6 @@ fun OverlayVideoPlayer(
         )
     }
 
-    // 倍速選択ダイアログ
     if (showSpeedDialog) {
         val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
         AlertDialog(

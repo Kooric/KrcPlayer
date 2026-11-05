@@ -5,14 +5,16 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,13 +25,11 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kooric.krcplayer.data.SecretVaultManager
 import com.kooric.krcplayer.model.VideoItem
-import com.kooric.krcplayer.ui.components.VideoItemCard
+import com.kooric.krcplayer.ui.components.VideoGridItemCard
 import com.kooric.krcplayer.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -55,6 +55,29 @@ fun SecretVaultScreen(
     fun refreshSecretVideos() {
         coroutineScope.launch {
             secretVideos = vaultManager.getSecretVideos()
+        }
+    }
+
+    // 4文字入力された瞬間に自動判定して即座にロック解除する関数
+    fun onDigitEntered(newPin: String) {
+        if (newPin.length > 4) return
+        pinInput = newPin
+
+        if (newPin.length == 4) {
+            if (!isPinAlreadySet) {
+                vaultManager.setPin(newPin)
+                Toast.makeText(context, "PINコードを設定しました", Toast.LENGTH_SHORT).show()
+                isUnlocked = true
+                refreshSecretVideos()
+            } else {
+                if (vaultManager.verifyPin(newPin)) {
+                    isUnlocked = true
+                    refreshSecretVideos()
+                } else {
+                    Toast.makeText(context, "PINコードが違います", Toast.LENGTH_SHORT).show()
+                    pinInput = ""
+                }
+            }
         }
     }
 
@@ -132,21 +155,17 @@ fun SecretVaultScreen(
                 .background(PureBlack)
         ) {
             if (!isUnlocked) {
-                // PINコード入力カード
+                // ===== 4桁入力した瞬間に自動で開く高速PINパッドUI =====
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(28.dp)
-                        .align(Alignment.Center)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(SurfaceDark)
-                        .border(1.dp, CardBorder, RoundedCornerShape(24.dp))
-                        .padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                        .fillMaxSize()
+                        .padding(horizontal = 28.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(68.dp)
+                            .size(64.dp)
                             .background(DeepBlueSurface, CircleShape)
                             .border(1.5.dp, ElectricBlueBright, CircleShape),
                         contentAlignment = Alignment.Center
@@ -154,87 +173,115 @@ fun SecretVaultScreen(
                         Icon(
                             imageVector = Icons.Default.Lock,
                             contentDescription = "Lock",
-                            modifier = Modifier.size(32.dp),
+                            modifier = Modifier.size(30.dp),
                             tint = ElectricBlueGlow
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
-                        text = if (isPinAlreadySet) "シークレットロック解除" else "新規PINコード設定",
-                        fontSize = 19.sp,
+                        text = if (isPinAlreadySet) "4桁のPINを入力（自動解除）" else "新規4桁PINコードを設定",
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
 
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Text(
-                        text = if (isPinAlreadySet) "4桁のPINコードを入力してください" else "保護用の4桁のPINコードを決めてください",
-                        fontSize = 13.sp,
-                        color = TextSecondary
-                    )
-
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    OutlinedTextField(
-                        value = pinInput,
-                        onValueChange = { if (it.length <= 4) pinInput = it },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        placeholder = { Text("••••") },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = ElectricBlueBright,
-                            unfocusedBorderColor = CardBorder,
-                            focusedContainerColor = SurfaceElevated,
-                            unfocusedContainerColor = SurfaceElevated
-                        ),
-                        modifier = Modifier.width(180.dp)
+                    // 4つのドットインジケーター
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        repeat(4) { index ->
+                            val filled = index < pinInput.length
+                            Box(
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clip(CircleShape)
+                                    .background(if (filled) ElectricBlueBright else SurfaceElevated)
+                                    .border(
+                                        width = 1.5.dp,
+                                        color = if (filled) ElectricBlueGlow else CardBorder,
+                                        shape = CircleShape
+                                    )
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(36.dp))
+
+                    // テンキーパッド (1〜9, 0, バックスペース)
+                    val rows = listOf(
+                        listOf("1", "2", "3"),
+                        listOf("4", "5", "6"),
+                        listOf("7", "8", "9"),
+                        listOf("", "0", "DEL")
                     )
 
-                    Spacer(modifier = Modifier.height(24.dp))
-
-                    Button(
-                        onClick = {
-                            if (pinInput.length < 4) {
-                                Toast.makeText(context, "4桁のPINを入力してください", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-
-                            if (!isPinAlreadySet) {
-                                vaultManager.setPin(pinInput)
-                                Toast.makeText(context, "PINコードを設定しました", Toast.LENGTH_SHORT).show()
-                                isUnlocked = true
-                                refreshSecretVideos()
-                            } else {
-                                if (vaultManager.verifyPin(pinInput)) {
-                                    isUnlocked = true
-                                    refreshSecretVideos()
-                                } else {
-                                    Toast.makeText(context, "PINコードが正しくありません", Toast.LENGTH_SHORT).show()
-                                    pinInput = ""
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        rows.forEach { row ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                row.forEach { key ->
+                                    when (key) {
+                                        "" -> Spacer(modifier = Modifier.size(72.dp))
+                                        "DEL" -> {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(72.dp)
+                                                    .clip(CircleShape)
+                                                    .background(SurfaceDark)
+                                                    .border(1.dp, CardBorder, CircleShape)
+                                                    .clickable {
+                                                        if (pinInput.isNotEmpty()) {
+                                                            pinInput = pinInput.dropLast(1)
+                                                        }
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.AutoMirrored.Filled.Backspace,
+                                                    contentDescription = "Delete",
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                        }
+                                        else -> {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(72.dp)
+                                                    .clip(CircleShape)
+                                                    .background(SurfaceElevated)
+                                                    .border(1.dp, ElectricBlue.copy(alpha = 0.4f), CircleShape)
+                                                    .clickable {
+                                                        onDigitEntered(pinInput + key)
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = key,
+                                                    color = TextPrimary,
+                                                    fontSize = 24.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlueBright),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                    ) {
-                        Text(
-                            text = if (isPinAlreadySet) "ロック解除" else "設定して開く",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = Color.White
-                        )
+                        }
                     }
                 }
             } else {
-                // ロック解除後の一覧
+                // ロック解除後の一覧（横3列グリッド）
                 if (secretVideos.isEmpty()) {
                     Column(
                         modifier = Modifier.align(Alignment.Center),
@@ -261,13 +308,21 @@ fun SecretVaultScreen(
                         )
                     }
                 } else {
-                    LazyColumn(
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(top = 8.dp, bottom = 140.dp)
+                        contentPadding = PaddingValues(
+                            start = 10.dp,
+                            end = 10.dp,
+                            top = 10.dp,
+                            bottom = 140.dp
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        items(secretVideos, key = { it.path }) { video ->
+                        items(secretVideos, key = { it.id }) { video ->
                             val isSelected = selectedIds.contains(video.id)
-                            VideoItemCard(
+                            VideoGridItemCard(
                                 video = video,
                                 isSelectionMode = isSelectionMode,
                                 isSelected = isSelected,
@@ -287,7 +342,6 @@ fun SecretVaultScreen(
                     }
                 }
 
-                // シークレット内での一括操作バー（復元 / 完全削除）
                 AnimatedVisibility(
                     visible = isSelectionMode,
                     enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
@@ -310,10 +364,10 @@ fun SecretVaultScreen(
                         Button(
                             onClick = {
                                 val targets = secretVideos.filter { selectedIds.contains(it.id) }
+                                selectedIds = emptySet()
                                 coroutineScope.launch {
                                     val count = vaultManager.restoreFromVault(targets)
                                     Toast.makeText(context, "${count}件を通常一覧へ戻しました", Toast.LENGTH_SHORT).show()
-                                    selectedIds = emptySet()
                                     refreshSecretVideos()
                                 }
                             },
@@ -331,10 +385,10 @@ fun SecretVaultScreen(
                         Button(
                             onClick = {
                                 val targets = secretVideos.filter { selectedIds.contains(it.id) }
+                                selectedIds = emptySet()
                                 coroutineScope.launch {
                                     val count = vaultManager.deleteFromVault(targets)
                                     Toast.makeText(context, "${count}件を削除しました", Toast.LENGTH_SHORT).show()
-                                    selectedIds = emptySet()
                                     refreshSecretVideos()
                                 }
                             },

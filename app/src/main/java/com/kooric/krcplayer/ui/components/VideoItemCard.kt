@@ -5,6 +5,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -12,7 +13,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -54,6 +54,7 @@ fun VideoGridItemCard(
             isCurrentlyPlaying -> SurfaceElevated
             else -> SurfaceDark
         },
+        animationSpec = tween(220),
         label = "GridCardBg"
     )
 
@@ -63,12 +64,13 @@ fun VideoGridItemCard(
             isCurrentlyPlaying -> ElectricBlue.copy(alpha = 0.8f)
             else -> CardBorder.copy(alpha = 0.5f)
         },
+        animationSpec = tween(220),
         label = "GridCardBorder"
     )
 
     val scale by animateFloatAsState(
-        targetValue = if (isSelected) 0.95f else 1f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        targetValue = if (isSelected) 0.94f else 1f,
+        animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMediumLow),
         label = "GridCardScale"
     )
 
@@ -84,7 +86,6 @@ fun VideoGridItemCard(
                 onLongClick = onLongClick
             )
     ) {
-        // サムネイル領域
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -98,7 +99,6 @@ fun VideoGridItemCard(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // 下部グラデーション
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -111,7 +111,6 @@ fun VideoGridItemCard(
                     )
             )
 
-            // 再生中インジケーター
             if (isCurrentlyPlaying) {
                 Box(
                     modifier = Modifier
@@ -135,10 +134,9 @@ fun VideoGridItemCard(
                 }
             }
 
-            // 選択チェックマーク（右上）
             this@Column.AnimatedVisibility(
                 visible = isSelectionMode,
-                enter = scaleIn() + fadeIn(),
+                enter = scaleIn(spring(stiffness = Spring.StiffnessMedium)) + fadeIn(),
                 exit = scaleOut() + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -147,7 +145,7 @@ fun VideoGridItemCard(
                 Box(
                     modifier = Modifier
                         .size(22.dp)
-                        .background(PureBlack.copy(alpha = 0.7f), CircleShape),
+                        .background(PureBlack.copy(alpha = 0.75f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -159,7 +157,6 @@ fun VideoGridItemCard(
                 }
             }
 
-            // 再生時間バッジ（右下）
             if (video.duration > 0) {
                 Box(
                     modifier = Modifier
@@ -178,7 +175,6 @@ fun VideoGridItemCard(
             }
         }
 
-        // タイトル ＆ サイズ
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -208,25 +204,55 @@ fun VideoGridItemCard(
     }
 }
 
-// ===== 最上部「最近再生した動画（最大5個横スライド）」用カード =====
+// ===== 最上部「最近再生した動画（最大5個横スライド）」用カード（長押し選択対応） =====
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RecentVideoCard(
     video: VideoItem,
+    isSelectionMode: Boolean = false,
+    isSelected: Boolean = false,
     isCurrentlyPlaying: Boolean = false,
     onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (isSelected) DeepBlueSurface.copy(alpha = 0.85f) else SurfaceElevated,
+        animationSpec = tween(220),
+        label = "RecentBg"
+    )
+
+    val borderColor by animateColorAsState(
+        targetValue = when {
+            isSelected -> ElectricBlueBright
+            isCurrentlyPlaying -> ElectricBlueBright
+            else -> ElectricBlue.copy(alpha = 0.4f)
+        },
+        animationSpec = tween(220),
+        label = "RecentBorder"
+    )
+
+    val scale by animateFloatAsState(
+        targetValue = if (isSelected) 0.94f else 1f,
+        animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMediumLow),
+        label = "RecentScale"
+    )
+
     Column(
         modifier = modifier
             .width(146.dp)
+            .scale(scale)
             .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceElevated)
+            .background(backgroundColor)
             .border(
                 width = 1.dp,
-                color = if (isCurrentlyPlaying) ElectricBlueBright else ElectricBlue.copy(alpha = 0.4f),
+                color = borderColor,
                 shape = RoundedCornerShape(12.dp)
             )
-            .clickable { onClick() }
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Box(
             modifier = Modifier
@@ -270,6 +296,30 @@ fun RecentVideoCard(
                 )
             }
 
+            // 右上 選択チェックマーク
+            this@Column.AnimatedVisibility(
+                visible = isSelectionMode,
+                enter = scaleIn(spring(stiffness = Spring.StiffnessMedium)) + fadeIn(),
+                exit = scaleOut() + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(5.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(22.dp)
+                        .background(PureBlack.copy(alpha = 0.75f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                        contentDescription = "Select",
+                        tint = if (isSelected) ElectricBlueBright else Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
             if (video.duration > 0) {
                 Box(
                     modifier = Modifier
@@ -290,7 +340,7 @@ fun RecentVideoCard(
 
         Text(
             text = video.title,
-            color = if (isCurrentlyPlaying) ElectricBlueGlow else TextPrimary,
+            color = if (isCurrentlyPlaying || isSelected) ElectricBlueGlow else TextPrimary,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -318,6 +368,7 @@ fun VideoItemCard(
             isCurrentlyPlaying -> SurfaceElevated
             else -> SurfaceDark
         },
+        animationSpec = tween(220),
         label = "CardBgColor"
     )
 
@@ -327,12 +378,13 @@ fun VideoItemCard(
             isCurrentlyPlaying -> ElectricBlue.copy(alpha = 0.7f)
             else -> CardBorder.copy(alpha = 0.5f)
         },
+        animationSpec = tween(220),
         label = "CardBorderColor"
     )
 
     val scale by animateFloatAsState(
-        targetValue = if (isSelected) 0.98f else 1f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        targetValue = if (isSelected) 0.97f else 1f,
+        animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMediumLow),
         label = "CardScale"
     )
 
@@ -439,16 +491,17 @@ fun VideoItemCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Surface(
-                    color = SurfaceElevated,
-                    shape = RoundedCornerShape(6.dp)
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(SurfaceElevated)
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
                         text = video.getFormattedSize(),
                         color = ElectricBlueGlow,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        fontWeight = FontWeight.Medium
                     )
                 }
 

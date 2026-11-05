@@ -5,6 +5,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -53,6 +54,17 @@ enum class VideoSortOption(val label: String) {
     DURATION_DESC("再生時間順")
 }
 
+private fun formatTotalSize(totalBytes: Long): String {
+    val kb = totalBytes / 1024.0
+    val mb = kb / 1024.0
+    val gb = mb / 1024.0
+    return when {
+        gb >= 1.0 -> String.format("%.2f GB", gb)
+        mb >= 1.0 -> String.format("%.1f MB", mb)
+        else -> String.format("%.0f KB", kb)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
@@ -72,10 +84,8 @@ fun HomeScreen(
     var searchQuery by remember { mutableStateOf("") }
     var isSearching by remember { mutableStateOf(false) }
 
-    // デフォルトで横3列グリッド表示
     var isGridView by remember { mutableStateOf(true) }
 
-    // 長押し複数選択状態 ＆ 連打防止フラグ
     var selectedVideoIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var isProcessingAction by remember { mutableStateOf(false) }
     val isSelectionMode = selectedVideoIds.isNotEmpty()
@@ -95,6 +105,12 @@ fun HomeScreen(
 
     BackHandler(enabled = isSelectionMode) {
         selectedVideoIds = emptySet()
+    }
+
+    // 全動画の総容量
+    val totalStorageText = remember(allVideos) {
+        val totalBytes = allVideos.sumOf { it.size }
+        "全 ${allVideos.size} 本 • 総計 ${formatTotalSize(totalBytes)}"
     }
 
     // 最近再生した動画（最大5件）
@@ -129,7 +145,10 @@ fun HomeScreen(
             ) {
                 AnimatedContent(
                     targetState = isSelectionMode,
-                    transitionSpec = { fadeIn() togetherWith fadeOut() },
+                    transitionSpec = {
+                        (fadeIn(tween(220)) + slideInVertically(tween(220)) { -it / 3 }) togetherWith
+                                (fadeOut(tween(180)) + slideOutVertically(tween(180)) { -it / 3 })
+                    },
                     label = "TopBarMode"
                 ) { selectionActive ->
                     if (selectionActive) {
@@ -137,7 +156,7 @@ fun HomeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(64.dp)
-                                .background(DeepBlueSurface.copy(alpha = 0.6f))
+                                .background(DeepBlueSurface.copy(alpha = 0.65f))
                                 .padding(horizontal = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -213,13 +232,13 @@ fun HomeScreen(
                                     fontWeight = FontWeight.ExtraBold
                                 )
                                 Text(
-                                    text = "全 ${allVideos.size} 本 • 長押しで一括選択",
+                                    text = totalStorageText,
                                     color = TextSecondary,
-                                    fontSize = 11.sp
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
                                 )
                             }
 
-                            // 3列グリッド ⇔ リスト切り替えボタン
                             IconButton(onClick = { isGridView = !isGridView }) {
                                 Icon(
                                     imageVector = if (isGridView) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
@@ -236,38 +255,42 @@ fun HomeScreen(
                                 )
                             }
 
-                            Spacer(modifier = Modifier.width(2.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
 
-                            Surface(
-                                onClick = onOpenSecretVault,
-                                color = DeepBlueSurface,
-                                shape = RoundedCornerShape(20.dp),
-                                modifier = Modifier.border(1.dp, ElectricBlueBright.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
+                            // シークレットボタン（枠線と背景色の範囲が1pxのズレもなく完全一致するBox構造）
+                            val pillShape = RoundedCornerShape(50)
+                            Row(
+                                modifier = Modifier
+                                    .clip(pillShape)
+                                    .background(DeepBlueSurface)
+                                    .border(1.dp, ElectricBlueBright.copy(alpha = 0.75f), pillShape)
+                                    .clickable { onOpenSecretVault() }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Lock,
-                                        contentDescription = "Secret Vault",
-                                        tint = ElectricBlueGlow,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(5.dp))
-                                    Text(
-                                        text = "シークレット",
-                                        color = ElectricBlueGlow,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Secret Vault",
+                                    tint = ElectricBlueGlow,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = "シークレット",
+                                    color = ElectricBlueGlow,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
                 }
 
-                AnimatedVisibility(visible = isSearching && !isSelectionMode) {
+                AnimatedVisibility(
+                    visible = isSearching && !isSelectionMode,
+                    enter = expandVertically(tween(220)) + fadeIn(tween(220)),
+                    exit = shrinkVertically(tween(180)) + fadeOut(tween(180))
+                ) {
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
@@ -305,15 +328,22 @@ fun HomeScreen(
                 ) {
                     VideoSortOption.entries.forEach { option ->
                         val selected = sortOption == option
+                        val chipBg by animateColorAsState(
+                            targetValue = if (selected) ElectricBlue else SurfaceDark,
+                            animationSpec = tween(200),
+                            label = "ChipBg"
+                        )
+                        val chipBorder by animateColorAsState(
+                            targetValue = if (selected) ElectricBlueGlow else CardBorder,
+                            animationSpec = tween(200),
+                            label = "ChipBorder"
+                        )
+                        val chipShape = RoundedCornerShape(50)
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(if (selected) ElectricBlue else SurfaceDark)
-                                .border(
-                                    width = 1.dp,
-                                    color = if (selected) ElectricBlueGlow else CardBorder,
-                                    shape = RoundedCornerShape(20.dp)
-                                )
+                                .clip(chipShape)
+                                .background(chipBg)
+                                .border(1.dp, chipBorder, chipShape)
                                 .clickable { sortOption = option }
                                 .padding(horizontal = 14.dp, vertical = 6.dp)
                         ) {
@@ -360,179 +390,218 @@ fun HomeScreen(
                         fontSize = 15.sp
                     )
                 }
-            } else if (isGridView) {
-                // ===== 横3列グリッド表示（最上部に最近再生した動画5個スライドセクション付き） =====
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = 10.dp,
-                        end = 10.dp,
-                        top = 10.dp,
-                        bottom = if (isSelectionMode) 110.dp else 160.dp
-                    ),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // 最近再生した動画（最大5個横スライド）
-                    if (recentVideos.isNotEmpty() && searchQuery.isBlank()) {
-                        item(span = { GridItemSpan(3) }) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 8.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.History,
-                                        contentDescription = null,
-                                        tint = ElectricBlueGlow,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "最近再生した動画",
-                                        color = TextPrimary,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-
-                                LazyRow(
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
-                                ) {
-                                    items(recentVideos, key = { "recent_${it.id}" }) { recentVideo ->
-                                        RecentVideoCard(
-                                            video = recentVideo,
-                                            isCurrentlyPlaying = currentlyPlayingVideoId == recentVideo.id,
-                                            onClick = { onPlayVideo(recentVideo) }
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(6.dp))
-                                HorizontalDivider(color = CardBorder.copy(alpha = 0.4f), thickness = 1.dp)
-                            }
-                        }
-                    }
-
-                    // 横3列動画グリッド
-                    items(
-                        items = displayedVideos,
-                        key = { it.id }
-                    ) { video ->
-                        val isSelected = selectedVideoIds.contains(video.id)
-                        VideoGridItemCard(
-                            video = video,
-                            isSelectionMode = isSelectionMode,
-                            isSelected = isSelected,
-                            isCurrentlyPlaying = currentlyPlayingVideoId == video.id,
-                            onClick = {
-                                if (isSelectionMode) {
-                                    selectedVideoIds = if (isSelected) {
-                                        selectedVideoIds - video.id
-                                    } else {
-                                        selectedVideoIds + video.id
-                                    }
-                                } else {
-                                    onPlayVideo(video)
-                                }
-                            },
-                            onLongClick = {
-                                selectedVideoIds = selectedVideoIds + video.id
-                            },
-                            modifier = Modifier.animateItemPlacement(
-                                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                            )
-                        )
-                    }
-                }
             } else {
-                // ===== 1列リスト表示（最上部に最近再生した動画5個スライドセクション付き） =====
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        top = 8.dp,
-                        bottom = if (isSelectionMode) 110.dp else 160.dp
-                    )
-                ) {
-                    if (recentVideos.isNotEmpty() && searchQuery.isBlank()) {
-                        item {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 6.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.History,
-                                        contentDescription = null,
-                                        tint = ElectricBlueGlow,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "最近再生した動画",
-                                        color = TextPrimary,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
+                // グリッド ⇔ リスト表示の滑らかなクロスフェード遷移
+                AnimatedContent(
+                    targetState = isGridView,
+                    transitionSpec = {
+                        fadeIn(tween(240)) togetherWith fadeOut(tween(180))
+                    },
+                    label = "ViewModeTransition"
+                ) { gridMode ->
+                    if (gridMode) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(3),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                start = 10.dp,
+                                end = 10.dp,
+                                top = 10.dp,
+                                bottom = if (isSelectionMode) 110.dp else 160.dp
+                            ),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (recentVideos.isNotEmpty() && searchQuery.isBlank()) {
+                                item(span = { GridItemSpan(3) }) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 8.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.History,
+                                                contentDescription = null,
+                                                tint = ElectricBlueGlow,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "最近再生した動画",
+                                                color = TextPrimary,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
 
-                                LazyRow(
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
-                                ) {
-                                    items(recentVideos, key = { "recent_list_${it.id}" }) { recentVideo ->
-                                        RecentVideoCard(
-                                            video = recentVideo,
-                                            isCurrentlyPlaying = currentlyPlayingVideoId == recentVideo.id,
-                                            onClick = { onPlayVideo(recentVideo) }
-                                        )
+                                        LazyRow(
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
+                                        ) {
+                                            items(recentVideos, key = { "recent_${it.id}" }) { recentVideo ->
+                                                val isRecentSelected = selectedVideoIds.contains(recentVideo.id)
+                                                RecentVideoCard(
+                                                    video = recentVideo,
+                                                    isSelectionMode = isSelectionMode,
+                                                    isSelected = isRecentSelected,
+                                                    isCurrentlyPlaying = currentlyPlayingVideoId == recentVideo.id,
+                                                    onClick = {
+                                                        if (isSelectionMode) {
+                                                            selectedVideoIds = if (isRecentSelected) {
+                                                                selectedVideoIds - recentVideo.id
+                                                            } else {
+                                                                selectedVideoIds + recentVideo.id
+                                                            }
+                                                        } else {
+                                                            onPlayVideo(recentVideo)
+                                                        }
+                                                    },
+                                                    onLongClick = {
+                                                        selectedVideoIds = selectedVideoIds + recentVideo.id
+                                                    }
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        HorizontalDivider(color = CardBorder.copy(alpha = 0.4f), thickness = 1.dp)
                                     }
                                 }
+                            }
 
-                                Spacer(modifier = Modifier.height(6.dp))
-                                HorizontalDivider(color = CardBorder.copy(alpha = 0.4f), thickness = 1.dp)
+                            items(
+                                items = displayedVideos,
+                                key = { it.id }
+                            ) { video ->
+                                val isSelected = selectedVideoIds.contains(video.id)
+                                VideoGridItemCard(
+                                    video = video,
+                                    isSelectionMode = isSelectionMode,
+                                    isSelected = isSelected,
+                                    isCurrentlyPlaying = currentlyPlayingVideoId == video.id,
+                                    onClick = {
+                                        if (isSelectionMode) {
+                                            selectedVideoIds = if (isSelected) {
+                                                selectedVideoIds - video.id
+                                            } else {
+                                                selectedVideoIds + video.id
+                                            }
+                                        } else {
+                                            onPlayVideo(video)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        selectedVideoIds = selectedVideoIds + video.id
+                                    },
+                                    modifier = Modifier.animateItemPlacement(
+                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                    )
+                                )
                             }
                         }
-                    }
-
-                    items(
-                        items = displayedVideos,
-                        key = { it.id }
-                    ) { video ->
-                        val isSelected = selectedVideoIds.contains(video.id)
-                        VideoItemCard(
-                            video = video,
-                            isSelectionMode = isSelectionMode,
-                            isSelected = isSelected,
-                            isCurrentlyPlaying = currentlyPlayingVideoId == video.id,
-                            onClick = {
-                                if (isSelectionMode) {
-                                    selectedVideoIds = if (isSelected) {
-                                        selectedVideoIds - video.id
-                                    } else {
-                                        selectedVideoIds + video.id
-                                    }
-                                } else {
-                                    onPlayVideo(video)
-                                }
-                            },
-                            onLongClick = {
-                                selectedVideoIds = selectedVideoIds + video.id
-                            },
-                            modifier = Modifier.animateItemPlacement(
-                                animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                top = 8.dp,
+                                bottom = if (isSelectionMode) 110.dp else 160.dp
                             )
-                        )
+                        ) {
+                            if (recentVideos.isNotEmpty() && searchQuery.isBlank()) {
+                                item {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 6.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.History,
+                                                contentDescription = null,
+                                                tint = ElectricBlueGlow,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "最近再生した動画",
+                                                color = TextPrimary,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        LazyRow(
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                                        ) {
+                                            items(recentVideos, key = { "recent_list_${it.id}" }) { recentVideo ->
+                                                val isRecentSelected = selectedVideoIds.contains(recentVideo.id)
+                                                RecentVideoCard(
+                                                    video = recentVideo,
+                                                    isSelectionMode = isSelectionMode,
+                                                    isSelected = isRecentSelected,
+                                                    isCurrentlyPlaying = currentlyPlayingVideoId == recentVideo.id,
+                                                    onClick = {
+                                                        if (isSelectionMode) {
+                                                            selectedVideoIds = if (isRecentSelected) {
+                                                                selectedVideoIds - recentVideo.id
+                                                            } else {
+                                                                selectedVideoIds + recentVideo.id
+                                                            }
+                                                        } else {
+                                                            onPlayVideo(recentVideo)
+                                                        }
+                                                    },
+                                                    onLongClick = {
+                                                        selectedVideoIds = selectedVideoIds + recentVideo.id
+                                                    }
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        HorizontalDivider(color = CardBorder.copy(alpha = 0.4f), thickness = 1.dp)
+                                    }
+                                }
+                            }
+
+                            items(
+                                items = displayedVideos,
+                                key = { it.id }
+                            ) { video ->
+                                val isSelected = selectedVideoIds.contains(video.id)
+                                VideoItemCard(
+                                    video = video,
+                                    isSelectionMode = isSelectionMode,
+                                    isSelected = isSelected,
+                                    isCurrentlyPlaying = currentlyPlayingVideoId == video.id,
+                                    onClick = {
+                                        if (isSelectionMode) {
+                                            selectedVideoIds = if (isSelected) {
+                                                selectedVideoIds - video.id
+                                            } else {
+                                                selectedVideoIds + video.id
+                                            }
+                                        } else {
+                                            onPlayVideo(video)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        selectedVideoIds = selectedVideoIds + video.id
+                                    },
+                                    modifier = Modifier.animateItemPlacement(
+                                        animationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                                    )
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -540,8 +609,14 @@ fun HomeScreen(
             // ===== 長押し選択時の下部フローティング一括操作バー =====
             AnimatedVisibility(
                 visible = isSelectionMode,
-                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                enter = slideInVertically(
+                    animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow),
+                    initialOffsetY = { it }
+                ) + fadeIn(),
+                exit = slideOutVertically(
+                    animationSpec = tween(200),
+                    targetOffsetY = { it }
+                ) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
@@ -558,14 +633,12 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 一括シークレット移動ボタン（連打防止＆瞬時完了）
                     Button(
                         enabled = !isProcessingAction,
                         onClick = {
                             if (isProcessingAction) return@Button
                             isProcessingAction = true
                             val targets = allVideos.filter { selectedVideoIds.contains(it.id) }
-                            // 押した瞬間に選択モードを閉じて2度押しを完全にブロック
                             selectedVideoIds = emptySet()
                             coroutineScope.launch {
                                 val count = vaultManager.moveVideosToVault(targets)
@@ -596,7 +669,6 @@ fun HomeScreen(
                         )
                     }
 
-                    // 一括削除ボタン
                     Button(
                         enabled = !isProcessingAction,
                         onClick = { showDeleteConfirmDialog = true },

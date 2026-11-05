@@ -8,6 +8,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -148,7 +152,34 @@ fun KrcAppRoot() {
     var recentRefreshTick by remember { mutableIntStateOf(0) }
 
     Box(modifier = Modifier.fillMaxSize().background(PureBlack)) {
-        NavHost(navController = navController, startDestination = "home") {
+        NavHost(
+            navController = navController,
+            startDestination = "home",
+            enterTransition = {
+                slideIntoContainer(
+                    towards = AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(280)
+                ) + fadeIn(tween(280))
+            },
+            exitTransition = {
+                slideOutOfContainer(
+                    towards = AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(280)
+                ) + fadeOut(tween(220))
+            },
+            popEnterTransition = {
+                slideIntoContainer(
+                    towards = AnimatedContentTransitionScope.SlideDirection.Right,
+                    animationSpec = tween(280)
+                ) + fadeIn(tween(280))
+            },
+            popExitTransition = {
+                slideOutOfContainer(
+                    towards = AnimatedContentTransitionScope.SlideDirection.Right,
+                    animationSpec = tween(280)
+                ) + fadeOut(tween(220))
+            }
+        ) {
             composable("home") {
                 HomeScreen(
                     currentlyPlayingVideoId = activeVideo?.id,
@@ -177,18 +208,29 @@ fun KrcAppRoot() {
             }
         }
 
-        activeVideo?.let { currentVideo ->
-            OverlayVideoPlayer(
-                video = currentVideo,
-                isMinimized = isPlayerMinimized,
-                onMinimizeChange = { minimized ->
-                    isPlayerMinimized = minimized
-                },
-                onClosePlayer = {
-                    activeVideo = null
-                    isPlayerMinimized = false
-                }
-            )
+        // プレイヤーの出現・消滅も滑らかなアニメーションで遷移
+        AnimatedVisibility(
+            visible = activeVideo != null,
+            enter = fadeIn(tween(240)) + scaleIn(
+                initialScale = 0.92f,
+                animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow)
+            ),
+            exit = fadeOut(tween(200)) + scaleOut(targetScale = 0.88f, animationSpec = tween(200)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            activeVideo?.let { currentVideo ->
+                OverlayVideoPlayer(
+                    video = currentVideo,
+                    isMinimized = isPlayerMinimized,
+                    onMinimizeChange = { minimized ->
+                        isPlayerMinimized = minimized
+                    },
+                    onClosePlayer = {
+                        activeVideo = null
+                        isPlayerMinimized = false
+                    }
+                )
+            }
         }
     }
 }

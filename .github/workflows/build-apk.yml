@@ -41,10 +41,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/heads/main')
         with:
-          tag_name: v1.3.0-${{ github.run_number }}
-          name: KrcPlayer v1.3.0 (Build ${{ github.run_number }})
+          tag_name: v1.4.0-${{ github.run_number }}
+          name: KrcPlayer v1.4.0 (Build ${{ github.run_number }})
           body: |
-            🎉 **KrcPlayer v1.3.0 (おやすみタイマー・連続拡大縮小アニメーション・ダブルタップ10秒シーク波紋・ミニ画面右上×・全～本総計～GB・最近再生長押し選択・シークレットボタン枠修正)** の最新APKが自動ビルドされました！
+            🎉 **KrcPlayer v1.4.0 (ミニプレイヤーからの動画切り替えクラッシュ修正・A-B区間リピート・通常リピート・2本指ピンチイン/アウト拡大縮小)** の最新APKが自動ビルドされました！
             
             下の `Assets` から `app-debug.apk` をダウンロードして、そのままタップすると「更新」ボタンのみで上書きアップデートできます！
           files: app/build/outputs/apk/debug/app-debug.apk

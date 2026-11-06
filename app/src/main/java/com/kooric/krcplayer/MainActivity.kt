@@ -9,8 +9,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -158,26 +156,26 @@ fun KrcAppRoot() {
             enterTransition = {
                 slideIntoContainer(
                     towards = AnimatedContentTransitionScope.SlideDirection.Left,
-                    animationSpec = tween(280)
-                ) + fadeIn(tween(280))
+                    animationSpec = tween(260)
+                ) + fadeIn(tween(260))
             },
             exitTransition = {
                 slideOutOfContainer(
                     towards = AnimatedContentTransitionScope.SlideDirection.Left,
-                    animationSpec = tween(280)
-                ) + fadeOut(tween(220))
+                    animationSpec = tween(260)
+                ) + fadeOut(tween(200))
             },
             popEnterTransition = {
                 slideIntoContainer(
                     towards = AnimatedContentTransitionScope.SlideDirection.Right,
-                    animationSpec = tween(280)
-                ) + fadeIn(tween(280))
+                    animationSpec = tween(260)
+                ) + fadeIn(tween(260))
             },
             popExitTransition = {
                 slideOutOfContainer(
                     towards = AnimatedContentTransitionScope.SlideDirection.Right,
-                    animationSpec = tween(280)
-                ) + fadeOut(tween(220))
+                    animationSpec = tween(260)
+                ) + fadeOut(tween(200))
             }
         ) {
             composable("home") {
@@ -208,29 +206,19 @@ fun KrcAppRoot() {
             }
         }
 
-        // プレイヤーの出現・消滅も滑らかなアニメーションで遷移
-        AnimatedVisibility(
-            visible = activeVideo != null,
-            enter = fadeIn(tween(240)) + scaleIn(
-                initialScale = 0.92f,
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow)
-            ),
-            exit = fadeOut(tween(200)) + scaleOut(targetScale = 0.88f, animationSpec = tween(200)),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            activeVideo?.let { currentVideo ->
-                OverlayVideoPlayer(
-                    video = currentVideo,
-                    isMinimized = isPlayerMinimized,
-                    onMinimizeChange = { minimized ->
-                        isPlayerMinimized = minimized
-                    },
-                    onClosePlayer = {
-                        activeVideo = null
-                        isPlayerMinimized = false
-                    }
-                )
-            }
+        // 上層オーバーレイプレイヤー
+        activeVideo?.let { currentVideo ->
+            OverlayVideoPlayer(
+                video = currentVideo,
+                isMinimized = isPlayerMinimized,
+                onMinimizeChange = { minimized ->
+                    isPlayerMinimized = minimized
+                },
+                onClosePlayer = {
+                    activeVideo = null
+                    isPlayerMinimized = false
+                }
+            )
         }
     }
 }

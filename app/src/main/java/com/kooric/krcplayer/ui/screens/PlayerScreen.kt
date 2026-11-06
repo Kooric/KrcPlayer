@@ -7,6 +7,7 @@ import android.content.pm.ActivityInfo
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.util.Rational
+import android.view.LayoutInflater
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
@@ -19,6 +20,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -38,10 +43,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,10 +63,10 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.kooric.krcplayer.R
 import com.kooric.krcplayer.model.VideoItem
 import com.kooric.krcplayer.ui.theme.*
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -72,7 +80,6 @@ fun OverlayVideoPlayer(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val coroutineScope = rememberCoroutineScope()
 
     // おやすみタイマー設定の永続保存用 SharedPreferences
     val timerPrefs = remember {
@@ -81,13 +88,23 @@ fun OverlayVideoPlayer(
     var savedTimerHours by remember { mutableIntStateOf(timerPrefs.getInt("saved_hours", 0)) }
     var savedTimerMinutes by remember { mutableIntStateOf(timerPrefs.getInt("saved_minutes", 30)) }
 
-    // 現在作動中のおやすみタイマー残り秒数 (0以下なら未作動)
     var sleepTimerRemainingSeconds by remember { mutableLongStateOf(0L) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
 
     // アプリ個別音量 (0.0f ~ 3.0f : 0% ~ 300% ブースト対応)
     var appVolume by remember { mutableFloatStateOf(1.0f) }
     var loudnessEnhancer by remember { mutableStateOf<LoudnessEnhancer?>(null) }
+    var attachedAudioSessionId by remember { mutableIntStateOf(C.AUDIO_SESSION_ID_UNSET) }
+
+    // 通常リピート ＆ A-B区間リピート状態
+    var isRepeatOne by remember { mutableStateOf(false) }
+    var abPointA by remember { mutableStateOf<Long?>(null) }
+    var abPointB by remember { mutableStateOf<Long?>(null) }
+
+    // 2本指ピンチイン・ピンチアウト拡大縮小（ズーム＆パン）状態
+    var videoScale by remember { mutableFloatStateOf(1.0f) }
+    var videoPanX by remember { mutableFloatStateOf(0f) }
+    var videoPanY by remember { mutableFloatStateOf(0f) }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context)
@@ -105,14 +122,19 @@ fun OverlayVideoPlayer(
     fun applyAppVolume(vol: Float) {
         val clamped = vol.coerceIn(0f, 3.0f)
         appVolume = clamped
-        exoPlayer.volume = clamped.coerceAtMost(1.0f)
-
         try {
-            if (clamped > 1.0f) {
-                if (loudnessEnhancer == null && exoPlayer.audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
-                    loudnessEnhancer = LoudnessEnhancer(exoPlayer.audioSessionId).apply {
+            exoPlayer.volume = clamped.coerceAtMost(1.0f)
+            val currentSessionId = exoPlayer.audioSessionId
+            if (clamped > 1.0f && currentSessionId != C.AUDIO_SESSION_ID_UNSET) {
+                if (loudnessEnhancer == null || attachedAudioSessionId != currentSessionId) {
+                    try {
+                        loudnessEnhancer?.release()
+                    } catch (_: Exception) {
+                    }
+                    loudnessEnhancer = LoudnessEnhancer(currentSessionId).apply {
                         enabled = true
                     }
+                    attachedAudioSessionId = currentSessionId
                 }
                 val gainMb = (((clamped - 1.0f) / 2.0f) * 2500).toInt()
                 loudnessEnhancer?.setTargetGain(gainMb)
@@ -124,12 +146,37 @@ fun OverlayVideoPlayer(
         }
     }
 
-    LaunchedEffect(video.uri) {
-        val mediaItem = MediaItem.fromUri(video.uri)
-        exoPlayer.setMediaItem(mediaItem)
-        exoPlayer.prepare()
-        exoPlayer.playWhenReady = true
-        applyAppVolume(appVolume)
+    var isPlaying by remember { mutableStateOf(true) }
+    var currentPosition by remember { mutableLongStateOf(0L) }
+    var totalDuration by remember { mutableLongStateOf(0L) }
+    var isControlsVisible by remember { mutableStateOf(true) }
+    var isScreenLocked by remember { mutableStateOf(false) }
+    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+    var showSpeedDialog by remember { mutableStateOf(false) }
+    var showVolumeSheet by remember { mutableStateOf(false) }
+    var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+
+    // 動画切り替え時（ミニプレイヤー再生中に他の動画を開いたときも安全にリセット＆再生開始）
+    LaunchedEffect(video.id, video.uri) {
+        currentPosition = 0L
+        totalDuration = 0L
+        abPointA = null
+        abPointB = null
+        videoScale = 1.0f
+        videoPanX = 0f
+        videoPanY = 0f
+        isControlsVisible = true
+
+        try {
+            val mediaItem = MediaItem.fromUri(video.uri)
+            exoPlayer.setMediaItem(mediaItem)
+            exoPlayer.repeatMode = if (isRepeatOne) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            exoPlayer.prepare()
+            exoPlayer.playWhenReady = true
+            applyAppVolume(appVolume)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     LaunchedEffect(isMinimized) {
@@ -156,7 +203,10 @@ fun OverlayVideoPlayer(
                 loudnessEnhancer?.release()
             } catch (_: Exception) {
             }
-            exoPlayer.release()
+            try {
+                exoPlayer.release()
+            } catch (_: Exception) {
+            }
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
@@ -165,22 +215,12 @@ fun OverlayVideoPlayer(
         onMinimizeChange(true)
     }
 
-    var isPlaying by remember { mutableStateOf(true) }
-    var currentPosition by remember { mutableLongStateOf(0L) }
-    var totalDuration by remember { mutableLongStateOf(0L) }
-    var isControlsVisible by remember { mutableStateOf(true) }
-    var isScreenLocked by remember { mutableStateOf(false) }
-    var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
-    var showSpeedDialog by remember { mutableStateOf(false) }
-    var showVolumeSheet by remember { mutableStateOf(false) }
-    var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
-
-    // スワイプジェスチャー表示用
+    // スワイプ・ピンチジェスチャー表示用
     var gestureOverlayTitle by remember { mutableStateOf<String?>(null) }
     var gestureOverlayValue by remember { mutableStateOf<String?>(null) }
     var gestureProgress by remember { mutableFloatStateOf(-1f) }
 
-    // ダブルタップ10秒シークのアニメーション表示用 (-1: 左10秒戻し, 1: 右10秒送り, 0: 非表示)
+    // ダブルタップ10秒シークのアニメーション表示用
     var doubleTapSeekSide by remember { mutableIntStateOf(0) }
     var doubleTapSeekAccumulated by remember { mutableIntStateOf(0) }
     var doubleTapTriggerTick by remember { mutableIntStateOf(0) }
@@ -197,36 +237,50 @@ fun OverlayVideoPlayer(
     var miniOffsetX by remember { mutableFloatStateOf(0f) }
     var miniOffsetY by remember { mutableFloatStateOf(0f) }
 
-    // フルスクリーン展開時はオフセットを滑らかに0へ戻す
     val animOffsetX by animateFloatAsState(
         targetValue = if (isMinimized) miniOffsetX else 0f,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
         label = "MiniOffsetX"
     )
     val animOffsetY by animateFloatAsState(
         targetValue = if (isMinimized) miniOffsetY else 0f,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
         label = "MiniOffsetY"
     )
 
+    // 再生位置更新 ＆ A-B区間リピート監視ループ (100ms周期)
     LaunchedEffect(exoPlayer) {
-        exoPlayer.addListener(object : Player.Listener {
+        val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
-                    totalDuration = exoPlayer.duration.coerceAtLeast(0L)
+                    val dur = exoPlayer.duration
+                    totalDuration = if (dur != C.TIME_UNSET && dur > 0L) dur else 0L
                     applyAppVolume(appVolume)
                 }
             }
-        })
+        }
+        exoPlayer.addListener(listener)
 
         while (true) {
-            currentPosition = exoPlayer.currentPosition.coerceAtLeast(0L)
-            totalDuration = exoPlayer.duration.coerceAtLeast(0L)
-            delay(300)
+            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+            val dur = exoPlayer.duration
+            currentPosition = pos
+            totalDuration = if (dur != C.TIME_UNSET && dur > 0L) dur else 0L
+
+            // A-B区間リピートが作動中の場合、B地点に到達したら即座にA地点へ戻す
+            val pointA = abPointA
+            val pointB = abPointB
+            if (pointA != null && pointB != null && pointB > pointA) {
+                if (pos >= pointB || pos < pointA) {
+                    exoPlayer.seekTo(pointA)
+                    currentPosition = pointA
+                }
+            }
+            delay(120L)
         }
     }
 
@@ -237,29 +291,41 @@ fun OverlayVideoPlayer(
         }
     }
 
-    // ===== BoxWithConstraints でフルスクリーン ⇔ 右下ミニプレイヤーのサイズ・位置・角丸を連続アニメーション補間 =====
+    // ===== BoxWithConstraints でフルスクリーン ⇔ 右下ミニプレイヤーを安全かつ滑らかにアニメーション補間 =====
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.BottomEnd
     ) {
-        val targetWidth = if (isMinimized) 232.dp else maxWidth
-        val targetHeight = if (isMinimized) 154.dp else maxHeight
+        val safeMaxWidth = maxWidth.coerceAtLeast(240.dp)
+        val safeMaxHeight = maxHeight.coerceAtLeast(160.dp)
+
+        val targetWidth = if (isMinimized) 232.dp else safeMaxWidth
+        val targetHeight = if (isMinimized) 154.dp else safeMaxHeight
         val targetPadEnd = if (isMinimized) 16.dp else 0.dp
         val targetPadBottom = if (isMinimized) 24.dp else 0.dp
         val targetCorner = if (isMinimized) 16.dp else 0.dp
         val targetBorderWidth = if (isMinimized) 1.5.dp else 0.dp
 
-        val smoothSpring = spring<androidx.compose.ui.unit.Dp>(
-            dampingRatio = 0.82f,
+        // DampingRatioNoBouncy (1.0f) を使い、0.dpへの遷移時にマイナス値へオーバーシュートするクラッシュを完全防止
+        val noBounceSpring = spring<Dp>(
+            dampingRatio = Spring.DampingRatioNoBouncy,
             stiffness = Spring.StiffnessMediumLow
         )
 
-        val animWidth by animateDpAsState(targetValue = targetWidth, animationSpec = smoothSpring, label = "PlayerWidth")
-        val animHeight by animateDpAsState(targetValue = targetHeight, animationSpec = smoothSpring, label = "PlayerHeight")
-        val animPadEnd by animateDpAsState(targetValue = targetPadEnd, animationSpec = smoothSpring, label = "PlayerPadEnd")
-        val animPadBottom by animateDpAsState(targetValue = targetPadBottom, animationSpec = smoothSpring, label = "PlayerPadBottom")
-        val animCorner by animateDpAsState(targetValue = targetCorner, animationSpec = smoothSpring, label = "PlayerCorner")
-        val animBorder by animateDpAsState(targetValue = targetBorderWidth, animationSpec = smoothSpring, label = "PlayerBorder")
+        val rawWidth by animateDpAsState(targetValue = targetWidth, animationSpec = noBounceSpring, label = "PlayerWidth")
+        val rawHeight by animateDpAsState(targetValue = targetHeight, animationSpec = noBounceSpring, label = "PlayerHeight")
+        val rawPadEnd by animateDpAsState(targetValue = targetPadEnd, animationSpec = noBounceSpring, label = "PlayerPadEnd")
+        val rawPadBottom by animateDpAsState(targetValue = targetPadBottom, animationSpec = noBounceSpring, label = "PlayerPadBottom")
+        val rawCorner by animateDpAsState(targetValue = targetCorner, animationSpec = noBounceSpring, label = "PlayerCorner")
+        val rawBorder by animateDpAsState(targetValue = targetBorderWidth, animationSpec = noBounceSpring, label = "PlayerBorder")
+
+        // 万が一にも負のDpにならないよう厳密に下限ガード
+        val animWidth = rawWidth.coerceIn(180.dp, safeMaxWidth)
+        val animHeight = rawHeight.coerceIn(120.dp, safeMaxHeight)
+        val animPadEnd = rawPadEnd.coerceAtLeast(0.dp)
+        val animPadBottom = rawPadBottom.coerceAtLeast(0.dp)
+        val animCorner = rawCorner.coerceAtLeast(0.dp)
+        val animBorder = rawBorder.coerceAtLeast(0.dp)
 
         Box(
             modifier = Modifier
@@ -268,162 +334,212 @@ fun OverlayVideoPlayer(
                 .width(animWidth)
                 .height(animHeight)
                 .shadow(
-                    elevation = if (isMinimized) 22.dp else 0.dp,
+                    elevation = if (isMinimized) 20.dp else 0.dp,
                     shape = RoundedCornerShape(animCorner),
                     spotColor = ElectricBlue
                 )
                 .clip(RoundedCornerShape(animCorner))
                 .background(Color.Black)
-                .border(
-                    width = animBorder,
-                    color = if (isMinimized) ElectricBlueBright.copy(alpha = 0.85f) else Color.Transparent,
-                    shape = RoundedCornerShape(animCorner)
+                .then(
+                    if (animBorder > 0.1.dp) {
+                        Modifier.border(
+                            width = animBorder,
+                            color = ElectricBlueBright.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(animCorner)
+                        )
+                    } else {
+                        Modifier
+                    }
                 )
         ) {
-            // ===== 共通の Video Surface (拡大縮小中も破棄されず滑らかにリサイズ) =====
             Column(modifier = Modifier.fillMaxSize()) {
+                // ===== 映像表示 ＆ ジェスチャー領域 =====
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                        .clip(RoundedCornerShape(topStart = animCorner, topEnd = animCorner))
                         .background(Color.Black)
-                        // ミニスクリーン時はドラッグ移動＆タップでフルスクリーン展開
-                        .then(
-                            if (isMinimized) {
-                                Modifier
-                                    .pointerInput(Unit) {
-                                        detectTapGestures(
-                                            onTap = {
-                                                miniOffsetX = 0f
-                                                miniOffsetY = 0f
-                                                onMinimizeChange(false)
-                                            }
-                                        )
+                        // シングルタップ ＆ 左右ダブルタップ（10秒戻る/進む）
+                        .pointerInput(isMinimized, isScreenLocked) {
+                            detectTapGestures(
+                                onTap = {
+                                    if (isMinimized) {
+                                        miniOffsetX = 0f
+                                        miniOffsetY = 0f
+                                        onMinimizeChange(false)
+                                    } else {
+                                        isControlsVisible = !isControlsVisible
                                     }
-                                    .pointerInput(Unit) {
-                                        detectDragGestures { change, dragAmount ->
-                                            change.consume()
-                                            miniOffsetX += dragAmount.x
-                                            miniOffsetY += dragAmount.y
+                                },
+                                onDoubleTap = { offset ->
+                                    if (!isMinimized && !isScreenLocked) {
+                                        val isLeft = offset.x < size.width / 2
+                                        if (isLeft) {
+                                            val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                                            exoPlayer.seekTo(target)
+                                            currentPosition = target
+                                            doubleTapSeekSide = -1
+                                            doubleTapSeekAccumulated = if (doubleTapSeekSide == -1) doubleTapSeekAccumulated + 10 else 10
+                                            doubleTapTriggerTick++
+                                        } else {
+                                            val durLimit = totalDuration.coerceAtLeast(0L)
+                                            val target = if (durLimit > 0L) {
+                                                (exoPlayer.currentPosition + 10_000L).coerceAtMost(durLimit)
+                                            } else {
+                                                exoPlayer.currentPosition + 10_000L
+                                            }
+                                            exoPlayer.seekTo(target)
+                                            currentPosition = target
+                                            doubleTapSeekSide = 1
+                                            doubleTapSeekAccumulated = if (doubleTapSeekSide == 1) doubleTapSeekAccumulated + 10 else 10
+                                            doubleTapTriggerTick++
                                         }
                                     }
-                            } else {
-                                // フルスクリーン時はシングルタップでUI表示切替、左右ダブルタップで10秒戻る/進む、ドラッグで音量・輝度・シーク
-                                Modifier
-                                    .pointerInput(isScreenLocked) {
-                                        detectTapGestures(
-                                            onTap = {
-                                                isControlsVisible = !isControlsVisible
-                                            },
-                                            onDoubleTap = { offset ->
-                                                if (!isScreenLocked) {
-                                                    val isLeft = offset.x < size.width / 2
-                                                    if (isLeft) {
-                                                        val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
-                                                        exoPlayer.seekTo(target)
-                                                        currentPosition = target
-                                                        doubleTapSeekSide = -1
-                                                        doubleTapSeekAccumulated = if (doubleTapSeekSide == -1) doubleTapSeekAccumulated + 10 else 10
-                                                        doubleTapTriggerTick++
-                                                    } else {
-                                                        val durationLimit = exoPlayer.duration.coerceAtLeast(0L)
-                                                        val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(durationLimit)
-                                                        exoPlayer.seekTo(target)
-                                                        currentPosition = target
-                                                        doubleTapSeekSide = 1
-                                                        doubleTapSeekAccumulated = if (doubleTapSeekSide == 1) doubleTapSeekAccumulated + 10 else 10
-                                                        doubleTapTriggerTick++
-                                                    }
-                                                }
-                                            }
-                                        )
-                                    }
-                                    .pointerInput(isScreenLocked) {
-                                        if (isScreenLocked) return@pointerInput
-
-                                        var startX = 0f
-                                        var isHorizontal = false
-                                        var isVertical = false
-
-                                        detectDragGestures(
-                                            onDragStart = { offset ->
-                                                startX = offset.x
-                                                isHorizontal = false
-                                                isVertical = false
-                                            },
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                val isLeftSide = startX < size.width / 2
-
-                                                if (!isHorizontal && !isVertical) {
-                                                    if (abs(dragAmount.x) > abs(dragAmount.y) && abs(dragAmount.x) > 8) {
-                                                        isHorizontal = true
-                                                    } else if (abs(dragAmount.y) > abs(dragAmount.x) && abs(dragAmount.y) > 8) {
-                                                        isVertical = true
-                                                    }
-                                                }
-
-                                                if (isHorizontal) {
-                                                    val seekDelta = (dragAmount.x * 160).toLong()
-                                                    val newPos = (exoPlayer.currentPosition + seekDelta).coerceIn(0L, exoPlayer.duration.coerceAtLeast(1L))
-                                                    exoPlayer.seekTo(newPos)
-                                                    currentPosition = newPos
-                                                    gestureOverlayTitle = if (dragAmount.x >= 0) "早送り >>" else "<< 巻き戻し"
-                                                    gestureOverlayValue = formatTime(newPos)
-                                                    gestureProgress = if (totalDuration > 0) newPos.toFloat() / totalDuration else -1f
-                                                } else if (isVertical) {
-                                                    val deltaRatio = -dragAmount.y / size.height.toFloat()
-                                                    if (isLeftSide) {
-                                                        activity?.let { act ->
-                                                            val lp = act.window.attributes
-                                                            val currentB = if (lp.screenBrightness < 0) 0.5f else lp.screenBrightness
-                                                            val newB = (currentB + deltaRatio * 1.4f).coerceIn(0.01f, 1.0f)
-                                                            lp.screenBrightness = newB
-                                                            act.window.attributes = lp
-                                                            gestureOverlayTitle = "画面の明るさ"
-                                                            gestureOverlayValue = "${(newB * 100).toInt()}%"
-                                                            gestureProgress = newB
-                                                        }
-                                                    } else {
-                                                        val newVol = (appVolume + deltaRatio * 2.4f).coerceIn(0f, 3.0f)
-                                                        applyAppVolume(newVol)
-                                                        val percent = (newVol * 100).toInt()
-                                                        gestureOverlayTitle = if (percent > 100) "音量ブースト" else "アプリ個別音量"
-                                                        gestureOverlayValue = "$percent%"
-                                                        gestureProgress = (newVol / 3.0f).coerceIn(0f, 1f)
-                                                    }
-                                                }
-                                            },
-                                            onDragEnd = {
-                                                gestureOverlayTitle = null
-                                                gestureOverlayValue = null
-                                                gestureProgress = -1f
-                                            }
-                                        )
-                                    }
+                                }
+                            )
+                        }
+                        // 1本指スワイプ（音量・明るさ・シーク / ミニ画面移動）＆ 2本指ピンチイン・アウト拡大縮小の統合マルチタッチ処理
+                        .pointerInput(isMinimized, isScreenLocked) {
+                            if (isMinimized) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    miniOffsetX += dragAmount.x
+                                    miniOffsetY += dragAmount.y
+                                }
+                                return@pointerInput
                             }
-                        )
+                            if (isScreenLocked) return@pointerInput
+
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val startX = down.position.x
+                                var isMultiTouchZoom = false
+                                var isHorizontalSwipe = false
+                                var isVerticalSwipe = false
+
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val pressedCount = event.changes.count { it.pressed }
+
+                                    if (pressedCount >= 2) {
+                                        // ===== 2本指ピンチイン・ピンチアウト拡大縮小モード =====
+                                        isMultiTouchZoom = true
+                                        isHorizontalSwipe = false
+                                        isVerticalSwipe = false
+
+                                        val zoomChange = event.calculateZoom()
+                                        val panChange = event.calculatePan()
+
+                                        if (zoomChange != 1f || panChange != androidx.compose.ui.geometry.Offset.Zero) {
+                                            val newScale = (videoScale * zoomChange).coerceIn(1.0f, 4.0f)
+                                            videoScale = newScale
+
+                                            if (newScale > 1.01f) {
+                                                val maxPanX = (size.width * (newScale - 1f)) / 2f
+                                                val maxPanY = (size.height * (newScale - 1f)) / 2f
+                                                videoPanX = (videoPanX + panChange.x).coerceIn(-maxPanX, maxPanX)
+                                                videoPanY = (videoPanY + panChange.y).coerceIn(-maxPanY, maxPanY)
+                                            } else {
+                                                videoPanX = 0f
+                                                videoPanY = 0f
+                                            }
+
+                                            gestureOverlayTitle = "ピンチズーム"
+                                            gestureOverlayValue = "${(videoScale * 100).roundToInt()}%"
+                                            gestureProgress = ((videoScale - 1f) / 3f).coerceIn(0f, 1f)
+                                        }
+
+                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                    } else if (pressedCount == 1 && !isMultiTouchZoom) {
+                                        // ===== 1本指スワイプ操作 =====
+                                        val change = event.changes.firstOrNull()
+                                        if (change != null && change.positionChanged()) {
+                                            val dragAmount = change.position - change.previousPosition
+                                            val isLeftSide = startX < size.width / 2
+
+                                            if (!isHorizontalSwipe && !isVerticalSwipe) {
+                                                if (abs(dragAmount.x) > abs(dragAmount.y) && abs(dragAmount.x) > 8f) {
+                                                    isHorizontalSwipe = true
+                                                } else if (abs(dragAmount.y) > abs(dragAmount.x) && abs(dragAmount.y) > 8f) {
+                                                    isVerticalSwipe = true
+                                                }
+                                            }
+
+                                            if (isHorizontalSwipe) {
+                                                change.consume()
+                                                // 拡大中(2倍以上)のときはパン移動、等倍時は早送り/巻き戻しシーク
+                                                val seekDelta = (dragAmount.x * 160).toLong()
+                                                val durLimit = totalDuration.coerceAtLeast(1L)
+                                                val newPos = (exoPlayer.currentPosition + seekDelta).coerceIn(0L, durLimit)
+                                                exoPlayer.seekTo(newPos)
+                                                currentPosition = newPos
+                                                gestureOverlayTitle = if (dragAmount.x >= 0) "早送り >>" else "<< 巻き戻し"
+                                                gestureOverlayValue = formatTime(newPos)
+                                                gestureProgress = if (totalDuration > 0L) (newPos.toFloat() / totalDuration).coerceIn(0f, 1f) else -1f
+                                            } else if (isVerticalSwipe) {
+                                                change.consume()
+                                                val deltaRatio = -dragAmount.y / size.height.toFloat().coerceAtLeast(1f)
+                                                if (isLeftSide) {
+                                                    activity?.let { act ->
+                                                        val lp = act.window.attributes
+                                                        val currentB = if (lp.screenBrightness < 0) 0.5f else lp.screenBrightness
+                                                        val newB = (currentB + deltaRatio * 1.4f).coerceIn(0.01f, 1.0f)
+                                                        lp.screenBrightness = newB
+                                                        act.window.attributes = lp
+                                                        gestureOverlayTitle = "画面の明るさ"
+                                                        gestureOverlayValue = "${(newB * 100).toInt()}%"
+                                                        gestureProgress = newB
+                                                    }
+                                                } else {
+                                                    val newVol = (appVolume + deltaRatio * 2.4f).coerceIn(0f, 3.0f)
+                                                    applyAppVolume(newVol)
+                                                    val percent = (newVol * 100).toInt()
+                                                    gestureOverlayTitle = if (percent > 100) "音量ブースト" else "アプリ個別音量"
+                                                    gestureOverlayValue = "$percent%"
+                                                    gestureProgress = (newVol / 3.0f).coerceIn(0f, 1f)
+                                                }
+                                            }
+                                        }
+                                    }
+                                } while (event.changes.any { it.pressed })
+
+                                gestureOverlayTitle = null
+                                gestureOverlayValue = null
+                                gestureProgress = -1f
+                            }
+                        }
                 ) {
+                    // TextureViewベースのPlayerView（2本指ピンチズームやミニ画面の角丸クリップが100%滑らかに効く）
                     AndroidView(
                         factory = { ctx ->
-                            PlayerView(ctx).apply {
+                            (LayoutInflater.from(ctx).inflate(R.layout.player_texture_view, null) as PlayerView).apply {
                                 player = exoPlayer
                                 useController = false
                                 this.resizeMode = resizeMode
                             }
                         },
                         update = { view ->
-                            view.player = exoPlayer
+                            if (view.player != exoPlayer) {
+                                view.player = exoPlayer
+                            }
                             view.resizeMode = if (isMinimized) AspectRatioFrameLayout.RESIZE_MODE_FIT else resizeMode
                         },
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = if (isMinimized) 1f else videoScale
+                                scaleY = if (isMinimized) 1f else videoScale
+                                translationX = if (isMinimized) 0f else videoPanX
+                                translationY = if (isMinimized) 0f else videoPanY
+                            }
                     )
 
-                    // ===== 縮小時のミニウィンドウ用オーバーレイ（動画の右上に×ボタンを配置！） =====
-                    this@Column.AnimatedVisibility(
+                    // ===== 縮小時のミニウィンドウ用オーバーレイ（動画の右上に×ボタンを配置） =====
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = isMinimized,
-                        enter = fadeIn(tween(200)),
-                        exit = fadeOut(tween(150)),
+                        enter = fadeIn(tween(180)),
+                        exit = fadeOut(tween(120)),
                         modifier = Modifier.fillMaxSize()
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
@@ -451,7 +567,7 @@ fun OverlayVideoPlayer(
                                 )
                             }
 
-                            // 右上：動画の上に載せる「×（閉じる）」ボタン！
+                            // 右上：動画の上に載せる「×（閉じる）」ボタン
                             Box(
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
@@ -474,10 +590,10 @@ fun OverlayVideoPlayer(
                     }
 
                     // ===== ダブルタップ 10秒戻る / 10秒進む の波紋インジケーター =====
-                    this@Column.AnimatedVisibility(
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = !isMinimized && doubleTapSeekSide == -1,
-                        enter = fadeIn(tween(150)) + scaleIn(spring(stiffness = Spring.StiffnessMedium)),
-                        exit = fadeOut(tween(250)),
+                        enter = fadeIn(tween(140)) + scaleIn(spring(stiffness = Spring.StiffnessMedium)),
+                        exit = fadeOut(tween(220)),
                         modifier = Modifier
                             .align(Alignment.CenterStart)
                             .padding(start = 48.dp)
@@ -485,7 +601,7 @@ fun OverlayVideoPlayer(
                         Column(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
-                                .background(ElectricBlue.copy(alpha = 0.35f))
+                                .background(ElectricBlue.copy(alpha = 0.38f))
                                 .border(1.dp, ElectricBlueGlow, RoundedCornerShape(50))
                                 .padding(horizontal = 24.dp, vertical = 14.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -505,10 +621,10 @@ fun OverlayVideoPlayer(
                         }
                     }
 
-                    this@Column.AnimatedVisibility(
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = !isMinimized && doubleTapSeekSide == 1,
-                        enter = fadeIn(tween(150)) + scaleIn(spring(stiffness = Spring.StiffnessMedium)),
-                        exit = fadeOut(tween(250)),
+                        enter = fadeIn(tween(140)) + scaleIn(spring(stiffness = Spring.StiffnessMedium)),
+                        exit = fadeOut(tween(220)),
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
                             .padding(end = 48.dp)
@@ -516,7 +632,7 @@ fun OverlayVideoPlayer(
                         Column(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(50))
-                                .background(ElectricBlue.copy(alpha = 0.35f))
+                                .background(ElectricBlue.copy(alpha = 0.38f))
                                 .border(1.dp, ElectricBlueGlow, RoundedCornerShape(50))
                                 .padding(horizontal = 24.dp, vertical = 14.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
@@ -536,11 +652,11 @@ fun OverlayVideoPlayer(
                         }
                     }
 
-                    // ===== スワイプジェスチャーオーバーレイ (音量・輝度・シーク) =====
-                    this@Column.AnimatedVisibility(
+                    // ===== スワイプ・ピンチズームのオーバーレイ表示 =====
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = !isMinimized && gestureOverlayTitle != null,
-                        enter = fadeIn(tween(150)) + scaleIn(),
-                        exit = fadeOut(tween(200)) + scaleOut(),
+                        enter = fadeIn(tween(120)) + scaleIn(),
+                        exit = fadeOut(tween(180)) + scaleOut(),
                         modifier = Modifier.align(Alignment.Center)
                     ) {
                         Column(
@@ -581,7 +697,7 @@ fun OverlayVideoPlayer(
                     }
 
                     // ===== フルスクリーンコントロールUI =====
-                    this@Column.AnimatedVisibility(
+                    androidx.compose.animation.AnimatedVisibility(
                         visible = !isMinimized && isControlsVisible,
                         enter = fadeIn(tween(220)),
                         exit = fadeOut(tween(220)),
@@ -593,9 +709,9 @@ fun OverlayVideoPlayer(
                                 .background(
                                     Brush.verticalGradient(
                                         colors = listOf(
-                                            Color.Black.copy(alpha = 0.75f),
+                                            Color.Black.copy(alpha = 0.78f),
                                             Color.Transparent,
-                                            Color.Black.copy(alpha = 0.85f)
+                                            Color.Black.copy(alpha = 0.88f)
                                         )
                                     )
                                 )
@@ -634,19 +750,48 @@ fun OverlayVideoPlayer(
 
                                 Spacer(modifier = Modifier.width(6.dp))
 
+                                val pillShape = RoundedCornerShape(50)
+
+                                // ズーム中なら「100%に戻す」リセットボタンを表示
+                                if (videoScale > 1.02f) {
+                                    Row(
+                                        modifier = Modifier
+                                            .padding(end = 6.dp)
+                                            .clip(pillShape)
+                                            .background(ElectricBlue)
+                                            .border(1.dp, ElectricBlueGlow, pillShape)
+                                            .clickable {
+                                                videoScale = 1.0f
+                                                videoPanX = 0f
+                                                videoPanY = 0f
+                                            }
+                                            .padding(horizontal = 9.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ZoomOutMap,
+                                            contentDescription = "Reset Zoom",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = "${(videoScale * 100).roundToInt()}%",
+                                            color = Color.White,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+
                                 // 🌙 おやすみタイマーボタン
                                 val timerActive = sleepTimerRemainingSeconds > 0L
-                                val pillShape = RoundedCornerShape(50)
                                 Row(
                                     modifier = Modifier
                                         .padding(end = 6.dp)
                                         .clip(pillShape)
                                         .background(if (timerActive) ElectricBlue else SurfaceElevated.copy(alpha = 0.85f))
-                                        .border(
-                                            1.dp,
-                                            if (timerActive) ElectricBlueGlow else CardBorder,
-                                            pillShape
-                                        )
+                                        .border(1.dp, if (timerActive) ElectricBlueGlow else CardBorder, pillShape)
                                         .clickable { showSleepTimerDialog = true }
                                         .padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -812,7 +957,12 @@ fun OverlayVideoPlayer(
 
                                     IconButton(
                                         onClick = {
-                                            val target = (exoPlayer.currentPosition + 10_000L).coerceAtMost(exoPlayer.duration.coerceAtLeast(0L))
+                                            val durLimit = totalDuration.coerceAtLeast(0L)
+                                            val target = if (durLimit > 0L) {
+                                                (exoPlayer.currentPosition + 10_000L).coerceAtMost(durLimit)
+                                            } else {
+                                                exoPlayer.currentPosition + 10_000L
+                                            }
                                             exoPlayer.seekTo(target)
                                             currentPosition = target
                                         },
@@ -829,14 +979,143 @@ fun OverlayVideoPlayer(
                                     }
                                 }
 
-                                // 下部シークバー
+                                // ===== 下部コントロール領域（リピート / A-Bリピート / シークバー） =====
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .align(Alignment.BottomCenter)
                                         .navigationBarsPadding()
-                                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                                        .padding(horizontal = 20.dp, vertical = 10.dp)
                                 ) {
+                                    // リピート機能 ＆ A-B区間リピートバー
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 8.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val pillShape = RoundedCornerShape(50)
+
+                                        // 1. 通常リピート（1本ループ ON/OFF）ボタン
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(pillShape)
+                                                .background(if (isRepeatOne) ElectricBlue else SurfaceDark.copy(alpha = 0.8f))
+                                                .border(
+                                                    1.dp,
+                                                    if (isRepeatOne) ElectricBlueGlow else CardBorder,
+                                                    pillShape
+                                                )
+                                                .clickable {
+                                                    isRepeatOne = !isRepeatOne
+                                                    exoPlayer.repeatMode = if (isRepeatOne) {
+                                                        Player.REPEAT_MODE_ONE
+                                                    } else {
+                                                        Player.REPEAT_MODE_OFF
+                                                    }
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isRepeatOne) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                                contentDescription = "Repeat",
+                                                tint = if (isRepeatOne) Color.White else TextSecondary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = if (isRepeatOne) "リピート ON" else "リピート OFF",
+                                                color = if (isRepeatOne) Color.White else TextSecondary,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        // 2. A-B 区間リピートボタン
+                                        val hasA = abPointA != null
+                                        val hasB = abPointB != null
+                                        val abLabel = when {
+                                            !hasA -> "A-B 区間リピート"
+                                            hasA && !hasB -> "A [${formatTime(abPointA!!)}] → Bを決定"
+                                            else -> "A-B [${formatTime(abPointA!!)} - ${formatTime(abPointB!!)}] ×"
+                                        }
+
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(pillShape)
+                                                .background(
+                                                    when {
+                                                        hasB -> ElectricBlue
+                                                        hasA -> DeepBlueSurface
+                                                        else -> SurfaceDark.copy(alpha = 0.8f)
+                                                    }
+                                                )
+                                                .border(
+                                                    1.dp,
+                                                    if (hasA) ElectricBlueGlow else CardBorder,
+                                                    pillShape
+                                                )
+                                                .clickable {
+                                                    val nowPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                                                    when {
+                                                        abPointA == null -> {
+                                                            abPointA = nowPos
+                                                            abPointB = null
+                                                            Toast.makeText(
+                                                                context,
+                                                                "始点 A (${formatTime(nowPos)}) を設定しました。終点 B で再度タップしてください",
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
+                                                        abPointB == null -> {
+                                                            if (nowPos <= abPointA!! + 500L) {
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    "終点 B は始点 A より後の位置でタップしてください",
+                                                                    Toast.LENGTH_SHORT
+                                                                ).show()
+                                                            } else {
+                                                                abPointB = nowPos
+                                                                Toast.makeText(
+                                                                    context,
+                                                                    "A-B区間リピートを開始しました",
+                                                                    Toast.LENGTH_SHORT
+                                                                ).show()
+                                                            }
+                                                        }
+                                                        else -> {
+                                                            abPointA = null
+                                                            abPointB = null
+                                                            Toast.makeText(
+                                                                context,
+                                                                "A-B区間リピートを解除しました",
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
+                                                    }
+                                                }
+                                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CompareArrows,
+                                                contentDescription = "A-B Repeat",
+                                                tint = if (hasA) Color.White else ElectricBlueGlow,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = abLabel,
+                                                color = if (hasA) Color.White else TextSecondary,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+
+                                    // 時間表記
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -856,12 +1135,20 @@ fun OverlayVideoPlayer(
                                         )
                                     }
 
+                                    // シークバー（ゼロ除算やNaN完全防止）
+                                    val safeSliderRatio = if (totalDuration > 0L) {
+                                        (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+                                    } else {
+                                        0f
+                                    }
                                     Slider(
-                                        value = if (totalDuration > 0) (currentPosition.toFloat() / totalDuration).coerceIn(0f, 1f) else 0f,
+                                        value = if (safeSliderRatio.isNaN()) 0f else safeSliderRatio,
                                         onValueChange = { ratio ->
-                                            val target = (ratio * totalDuration).toLong()
-                                            exoPlayer.seekTo(target)
-                                            currentPosition = target
+                                            if (totalDuration > 0L) {
+                                                val target = (ratio * totalDuration).toLong()
+                                                exoPlayer.seekTo(target)
+                                                currentPosition = target
+                                            }
                                         },
                                         colors = SliderDefaults.colors(
                                             thumbColor = ElectricBlueGlow,
@@ -875,15 +1162,16 @@ fun OverlayVideoPlayer(
                     }
                 }
 
-                // ===== ミニウィンドウ下部バー（タイトル ＆ 再生/一時停止ボタン、×は動画右上に移動済み） =====
-                AnimatedVisibility(
-                    visible = isMinimized,
-                    enter = fadeIn(tween(200)) + expandVertically(),
-                    exit = fadeOut(tween(150)) + shrinkVertically()
-                ) {
+                // ===== ミニウィンドウ下部バー（タイトル ＆ 再生/一時停止ボタン） =====
+                if (isMinimized) {
+                    val safeMiniProgress = if (totalDuration > 0L) {
+                        (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
                     Column(modifier = Modifier.fillMaxWidth()) {
                         LinearProgressIndicator(
-                            progress = { if (totalDuration > 0) (currentPosition.toFloat() / totalDuration).coerceIn(0f, 1f) else 0f },
+                            progress = { if (safeMiniProgress.isNaN()) 0f else safeMiniProgress },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(2.dp),
@@ -934,7 +1222,7 @@ fun OverlayVideoPlayer(
         }
     }
 
-    // ===== 🌙 おやすみタイマー設定ダイアログ（次回も使えるように設定時間を自動保存） =====
+    // ===== 🌙 おやすみタイマー設定ダイアログ =====
     if (showSleepTimerDialog) {
         var inputHours by remember { mutableIntStateOf(savedTimerHours) }
         var inputMinutes by remember { mutableIntStateOf(savedTimerMinutes) }
@@ -980,13 +1268,11 @@ fun OverlayVideoPlayer(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // 時間・分のステッパー選択
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // 時間 (0 ~ 12時間)
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             IconButton(
                                 onClick = { inputHours = (inputHours + 1).coerceIn(0, 12) },
@@ -1015,7 +1301,6 @@ fun OverlayVideoPlayer(
 
                         Text(":", color = TextSecondary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
 
-                        // 分 (0 ~ 59分, 5分単位＆1分単位対応)
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             IconButton(
                                 onClick = { inputMinutes = (inputMinutes + 5) % 60 },
@@ -1045,7 +1330,6 @@ fun OverlayVideoPlayer(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // 分の微調整スライダー (1分刻み)
                     Slider(
                         value = inputMinutes.toFloat(),
                         onValueChange = { inputMinutes = it.roundToInt().coerceIn(0, 59) },
@@ -1059,7 +1343,6 @@ fun OverlayVideoPlayer(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // クイックプリセットチップ
                     val presets = listOf(
                         0 to 15,
                         0 to 30,
@@ -1108,7 +1391,6 @@ fun OverlayVideoPlayer(
                             Toast.makeText(context, "1分以上の時間を設定してください", Toast.LENGTH_SHORT).show()
                             return@Button
                         }
-                        // 設定時間を永続保存（次回開いたときもこの時間がそのままセットされる）
                         savedTimerHours = inputHours
                         savedTimerMinutes = inputMinutes
                         timerPrefs.edit()

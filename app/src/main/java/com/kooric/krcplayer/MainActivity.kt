@@ -4,7 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,7 +39,7 @@ import com.kooric.krcplayer.ui.screens.OverlayVideoPlayer
 import com.kooric.krcplayer.ui.screens.SecretVaultScreen
 import com.kooric.krcplayer.ui.theme.*
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -197,7 +197,10 @@ fun KrcAppRoot() {
             composable("secret") {
                 SecretVaultScreen(
                     currentlyPlayingVideoId = activeVideo?.id,
-                    onBack = { navController.popBackStack() },
+                    onBack = {
+                        recentRefreshTick++
+                        navController.popBackStack()
+                    },
                     onPlayVideo = { video ->
                         activeVideo = video
                         isPlayerMinimized = false

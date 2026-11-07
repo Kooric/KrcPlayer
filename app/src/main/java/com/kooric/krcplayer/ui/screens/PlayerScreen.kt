@@ -25,6 +25,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -46,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,9 +63,11 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kooric.krcplayer.R
+import com.kooric.krcplayer.data.SecretVaultManager
 import com.kooric.krcplayer.model.VideoItem
 import com.kooric.krcplayer.ui.theme.*
 import kotlinx.coroutines.delay
@@ -81,17 +85,22 @@ fun OverlayVideoPlayer(
     val context = LocalContext.current
     val activity = context as? Activity
 
-    // おやすみタイマー設定の永続保存用 SharedPreferences
+    // おやすみタイマー ＆ 音量設定の永続保存用 SharedPreferences
     val timerPrefs = remember {
         context.getSharedPreferences("krc_sleep_timer_prefs", Context.MODE_PRIVATE)
     }
     var savedTimerHours by remember { mutableIntStateOf(timerPrefs.getInt("saved_hours", 0)) }
     var savedTimerMinutes by remember { mutableIntStateOf(timerPrefs.getInt("saved_minutes", 30)) }
 
+    // 次の動画再生時に前回のボリュームが100%を超えていたら100%に戻す設定（デフォルトON）
+    var resetVolumeOver100 by remember {
+        mutableStateOf(timerPrefs.getBoolean("reset_volume_over_100", true))
+    }
+
     var sleepTimerRemainingSeconds by remember { mutableLongStateOf(0L) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
 
-    // アプリ個別音量 (0.0f ~ 3.0f : 0% ~ 300% ブースト対応)
+    // アプリ個別音量 (0.0f ~ 5.0f : 0% ~ 500% ブースト対応)
     var appVolume by remember { mutableFloatStateOf(1.0f) }
     var loudnessEnhancer by remember { mutableStateOf<LoudnessEnhancer?>(null) }
     var attachedAudioSessionId by remember { mutableIntStateOf(C.AUDIO_SESSION_ID_UNSET) }
@@ -106,8 +115,11 @@ fun OverlayVideoPlayer(
     var videoPanX by remember { mutableFloatStateOf(0f) }
     var videoPanY by remember { mutableFloatStateOf(0f) }
 
+    // シークレットフォルダ内の暗号化動画もオンザフライ復号で再生できるExoPlayer
     val exoPlayer = remember {
+        val dataSourceFactory = SecretVaultManager.createExoDataSourceFactory(context)
         ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
@@ -120,7 +132,7 @@ fun OverlayVideoPlayer(
     }
 
     fun applyAppVolume(vol: Float) {
-        val clamped = vol.coerceIn(0f, 3.0f)
+        val clamped = vol.coerceIn(0f, 5.0f)
         appVolume = clamped
         try {
             exoPlayer.volume = clamped.coerceAtMost(1.0f)
@@ -136,7 +148,8 @@ fun OverlayVideoPlayer(
                     }
                     attachedAudioSessionId = currentSessionId
                 }
-                val gainMb = (((clamped - 1.0f) / 2.0f) * 2500).toInt()
+                // 100% ~ 500% (1.0f ~ 5.0f) を 0 ~ 4000 mB (+40dB) のゲインにマッピング
+                val gainMb = (((clamped - 1.0f) / 4.0f) * 4000).toInt()
                 loudnessEnhancer?.setTargetGain(gainMb)
                 loudnessEnhancer?.enabled = true
             } else {
@@ -155,6 +168,7 @@ fun OverlayVideoPlayer(
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showVolumeSheet by remember { mutableStateOf(false) }
     var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
+    var isDraggingSeekbar by remember { mutableStateOf(false) }
 
     // 動画切り替え時（ミニプレイヤー再生中に他の動画を開いたときも安全にリセット＆再生開始）
     LaunchedEffect(video.id, video.uri) {
@@ -166,6 +180,11 @@ fun OverlayVideoPlayer(
         videoPanX = 0f
         videoPanY = 0f
         isControlsVisible = true
+
+        // 設定がONで前回の音量が100%を超えていたら自動的に100%へ戻す
+        if (resetVolumeOver100 && appVolume > 1.0f) {
+            appVolume = 1.0f
+        }
 
         try {
             val mediaItem = MediaItem.fromUri(video.uri)
@@ -248,7 +267,7 @@ fun OverlayVideoPlayer(
         label = "MiniOffsetY"
     )
 
-    // 再生位置更新 ＆ A-B区間リピート監視ループ (100ms周期)
+    // 再生位置更新 ＆ A-B区間リピート監視ループ (120ms周期)
     LaunchedEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -266,26 +285,28 @@ fun OverlayVideoPlayer(
         exoPlayer.addListener(listener)
 
         while (true) {
-            val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
-            val dur = exoPlayer.duration
-            currentPosition = pos
-            totalDuration = if (dur != C.TIME_UNSET && dur > 0L) dur else 0L
+            if (!isDraggingSeekbar) {
+                val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                val dur = exoPlayer.duration
+                currentPosition = pos
+                totalDuration = if (dur != C.TIME_UNSET && dur > 0L) dur else 0L
 
-            // A-B区間リピートが作動中の場合、B地点に到達したら即座にA地点へ戻す
-            val pointA = abPointA
-            val pointB = abPointB
-            if (pointA != null && pointB != null && pointB > pointA) {
-                if (pos >= pointB || pos < pointA) {
-                    exoPlayer.seekTo(pointA)
-                    currentPosition = pointA
+                // A-B区間リピートが作動中の場合、B地点に到達したら即座にA地点へ戻す
+                val pointA = abPointA
+                val pointB = abPointB
+                if (pointA != null && pointB != null && pointB > pointA) {
+                    if (pos >= pointB || pos < pointA) {
+                        exoPlayer.seekTo(pointA)
+                        currentPosition = pointA
+                    }
                 }
             }
             delay(120L)
         }
     }
 
-    LaunchedEffect(isControlsVisible, isMinimized) {
-        if (isControlsVisible && !isScreenLocked && !isMinimized) {
+    LaunchedEffect(isControlsVisible, isMinimized, isDraggingSeekbar) {
+        if (isControlsVisible && !isScreenLocked && !isMinimized && !isDraggingSeekbar) {
             delay(3800)
             isControlsVisible = false
         }
@@ -360,7 +381,7 @@ fun OverlayVideoPlayer(
                         .weight(1f)
                         .clip(RoundedCornerShape(topStart = animCorner, topEnd = animCorner))
                         .background(Color.Black)
-                        // シングルタップ ＆ 左右ダブルタップ（10秒戻る/進む）
+                        // シングルタップ ＆ 左右ダブルタップ（10秒戻る/進む ※画面下部・上部では誤発動しないよう制限）
                         .pointerInput(isMinimized, isScreenLocked) {
                             detectTapGestures(
                                 onTap = {
@@ -374,6 +395,11 @@ fun OverlayVideoPlayer(
                                 },
                                 onDoubleTap = { offset ->
                                     if (!isMinimized && !isScreenLocked) {
+                                        val topIgnorePx = 76.dp.toPx()
+                                        val bottomIgnorePx = 165.dp.toPx()
+                                        if (offset.y < topIgnorePx || offset.y > size.height - bottomIgnorePx) {
+                                            return@detectTapGestures
+                                        }
                                         val isLeft = offset.x < size.width / 2
                                         if (isLeft) {
                                             val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
@@ -400,6 +426,7 @@ fun OverlayVideoPlayer(
                             )
                         }
                         // 1本指スワイプ（音量・明るさ・シーク / ミニ画面移動）＆ 2本指ピンチイン・アウト拡大縮小の統合マルチタッチ処理
+                        // ※画面下部（165dp以内）および上部（76dp以内）からの1本指スワイプは完全無効化し、シークバー操作との競合を防止！
                         .pointerInput(isMinimized, isScreenLocked) {
                             if (isMinimized) {
                                 detectDragGestures { change, dragAmount ->
@@ -414,6 +441,13 @@ fun OverlayVideoPlayer(
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 val startX = down.position.x
+                                val startY = down.position.y
+
+                                val topZonePx = 76.dp.toPx()
+                                val bottomZonePx = 165.dp.toPx()
+                                // 画面上部または画面下部から始まったタッチでは1本指スワイプ（早送り/音量/明るさ）を発動させない
+                                val isSingleFingerBlockedZone = startY < topZonePx || startY > (size.height - bottomZonePx)
+
                                 var isMultiTouchZoom = false
                                 var isHorizontalSwipe = false
                                 var isVerticalSwipe = false
@@ -451,24 +485,23 @@ fun OverlayVideoPlayer(
                                         }
 
                                         event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                    } else if (pressedCount == 1 && !isMultiTouchZoom) {
-                                        // ===== 1本指スワイプ操作 =====
+                                    } else if (pressedCount == 1 && !isMultiTouchZoom && !isSingleFingerBlockedZone && !isDraggingSeekbar) {
+                                        // ===== 1本指スワイプ操作（中央エリアのみ有効） =====
                                         val change = event.changes.firstOrNull()
                                         if (change != null && change.positionChanged()) {
                                             val dragAmount = change.position - change.previousPosition
                                             val isLeftSide = startX < size.width / 2
 
                                             if (!isHorizontalSwipe && !isVerticalSwipe) {
-                                                if (abs(dragAmount.x) > abs(dragAmount.y) && abs(dragAmount.x) > 8f) {
+                                                if (abs(dragAmount.x) > abs(dragAmount.y) && abs(dragAmount.x) > 10f) {
                                                     isHorizontalSwipe = true
-                                                } else if (abs(dragAmount.y) > abs(dragAmount.x) && abs(dragAmount.y) > 8f) {
+                                                } else if (abs(dragAmount.y) > abs(dragAmount.x) && abs(dragAmount.y) > 10f) {
                                                     isVerticalSwipe = true
                                                 }
                                             }
 
                                             if (isHorizontalSwipe) {
                                                 change.consume()
-                                                // 拡大中(2倍以上)のときはパン移動、等倍時は早送り/巻き戻しシーク
                                                 val seekDelta = (dragAmount.x * 160).toLong()
                                                 val durLimit = totalDuration.coerceAtLeast(1L)
                                                 val newPos = (exoPlayer.currentPosition + seekDelta).coerceIn(0L, durLimit)
@@ -492,12 +525,12 @@ fun OverlayVideoPlayer(
                                                         gestureProgress = newB
                                                     }
                                                 } else {
-                                                    val newVol = (appVolume + deltaRatio * 2.4f).coerceIn(0f, 3.0f)
+                                                    val newVol = (appVolume + deltaRatio * 3.0f).coerceIn(0f, 5.0f)
                                                     applyAppVolume(newVol)
                                                     val percent = (newVol * 100).toInt()
-                                                    gestureOverlayTitle = if (percent > 100) "音量ブースト" else "アプリ個別音量"
+                                                    gestureOverlayTitle = if (percent > 100) "音量ブースト (最大500%)" else "アプリ個別音量"
                                                     gestureOverlayValue = "$percent%"
-                                                    gestureProgress = (newVol / 3.0f).coerceIn(0f, 1f)
+                                                    gestureProgress = (newVol / 5.0f).coerceIn(0f, 1f)
                                                 }
                                             }
                                         }
@@ -661,7 +694,7 @@ fun OverlayVideoPlayer(
                     ) {
                         Column(
                             modifier = Modifier
-                                .width(180.dp)
+                                .width(190.dp)
                                 .clip(RoundedCornerShape(18.dp))
                                 .background(PureBlack.copy(alpha = 0.85f))
                                 .border(1.dp, ElectricBlueBright.copy(alpha = 0.6f), RoundedCornerShape(18.dp))
@@ -711,7 +744,7 @@ fun OverlayVideoPlayer(
                                         colors = listOf(
                                             Color.Black.copy(alpha = 0.78f),
                                             Color.Transparent,
-                                            Color.Black.copy(alpha = 0.88f)
+                                            Color.Black.copy(alpha = 0.90f)
                                         )
                                     )
                                 )
@@ -813,13 +846,13 @@ fun OverlayVideoPlayer(
                                     }
                                 }
 
-                                // 音量ブーストボタン (0% ~ 300%)
+                                // 音量ブーストボタン (0% ~ 500%)
                                 Row(
                                     modifier = Modifier
                                         .padding(end = 6.dp)
                                         .clip(pillShape)
-                                        .background(DeepBlueSurface.copy(alpha = 0.85f))
-                                        .border(1.dp, ElectricBlueBright.copy(alpha = 0.6f), pillShape)
+                                        .background(if (appVolume > 1.0f) ElectricBlue else DeepBlueSurface.copy(alpha = 0.85f))
+                                        .border(1.dp, ElectricBlueBright.copy(alpha = 0.7f), pillShape)
                                         .clickable { showVolumeSheet = true }
                                         .padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
@@ -827,12 +860,12 @@ fun OverlayVideoPlayer(
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                                         contentDescription = "Volume",
-                                        tint = ElectricBlueGlow,
+                                        tint = if (appVolume > 1.0f) Color.White else ElectricBlueGlow,
                                         modifier = Modifier.size(15.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "${(appVolume * 100).toInt()}%",
+                                        text = "${(appVolume * 100).roundToInt()}%",
                                         color = Color.White,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
@@ -979,7 +1012,7 @@ fun OverlayVideoPlayer(
                                     }
                                 }
 
-                                // ===== 下部コントロール領域（リピート / A-Bリピート / シークバー） =====
+                                // ===== 下部コントロール領域（リピート / A-Bリピート / 大型シークバー） =====
                                 Column(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -991,7 +1024,7 @@ fun OverlayVideoPlayer(
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(bottom = 8.dp),
+                                            .padding(bottom = 6.dp),
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
@@ -1135,26 +1168,38 @@ fun OverlayVideoPlayer(
                                         )
                                     }
 
-                                    // シークバー（ゼロ除算やNaN完全防止）
+                                    // 大型タッチ判定付きシークバー（高さ52dpの広いタッチ判定領域 ＆ 太いトラックバー）
                                     val safeSliderRatio = if (totalDuration > 0L) {
                                         (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
                                     } else {
                                         0f
                                     }
-                                    Slider(
-                                        value = if (safeSliderRatio.isNaN()) 0f else safeSliderRatio,
-                                        onValueChange = { ratio ->
-                                            if (totalDuration > 0L) {
-                                                val target = (ratio * totalDuration).toLong()
-                                                exoPlayer.seekTo(target)
-                                                currentPosition = target
+                                    LargeInteractiveSeekbar(
+                                        progress = if (safeSliderRatio.isNaN()) 0f else safeSliderRatio,
+                                        abStartRatio = if (totalDuration > 0L && abPointA != null) {
+                                            (abPointA!!.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+                                        } else null,
+                                        abEndRatio = if (totalDuration > 0L && abPointB != null) {
+                                            (abPointB!!.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f)
+                                        } else null,
+                                        onDraggingChange = { dragging ->
+                                            isDraggingSeekbar = dragging
+                                            if (!dragging) {
+                                                gestureOverlayTitle = null
+                                                gestureOverlayValue = null
+                                                gestureProgress = -1f
                                             }
                                         },
-                                        colors = SliderDefaults.colors(
-                                            thumbColor = ElectricBlueGlow,
-                                            activeTrackColor = ElectricBlueBright,
-                                            inactiveTrackColor = SurfaceElevated
-                                        )
+                                        onSeekRatio = { ratio ->
+                                            if (totalDuration > 0L) {
+                                                val target = (ratio * totalDuration).toLong().coerceIn(0L, totalDuration)
+                                                exoPlayer.seekTo(target)
+                                                currentPosition = target
+                                                gestureOverlayTitle = "シーク移動"
+                                                gestureOverlayValue = formatTime(target)
+                                                gestureProgress = ratio
+                                            }
+                                        }
                                     )
                                 }
                             }
@@ -1429,35 +1474,35 @@ fun OverlayVideoPlayer(
         )
     }
 
-    // アプリ個別音量調整ダイアログ (0% ~ 300%)
+    // アプリ個別音量調整ダイアログ (0% ~ 500% ＆ 100%超リセット設定)
     if (showVolumeSheet) {
         AlertDialog(
             onDismissRequest = { showVolumeSheet = false },
             containerColor = SurfaceDark,
             titleContentColor = TextPrimary,
             title = {
-                Text("KrcPlayer 音量ブースト設定", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("KrcPlayer 音量ブースト (最大500%)", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             },
             text = {
                 Column {
                     Text(
-                        text = "スマホ本体のメディア音量とは別に、このプレイヤーだけの音量を 0% 〜 300% で個別調整・増幅できます。",
+                        text = "スマホ本体のメディア音量とは別に、このプレイヤーだけの音量を 0% 〜 500% で個別調整・超増幅できます。",
                         color = TextSecondary,
                         fontSize = 13.sp
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "現在の音量: ${(appVolume * 100).toInt()}%",
+                        text = "現在の音量: ${(appVolume * 100).roundToInt()}%",
                         color = ElectricBlueGlow,
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.ExtraBold,
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Slider(
                         value = appVolume,
                         onValueChange = { applyAppVolume(it) },
-                        valueRange = 0f..3.0f,
+                        valueRange = 0f..5.0f,
                         colors = SliderDefaults.colors(
                             thumbColor = ElectricBlueGlow,
                             activeTrackColor = ElectricBlueBright,
@@ -1468,16 +1513,67 @@ fun OverlayVideoPlayer(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        TextButton(onClick = { applyAppVolume(0f) }) { Text("0%") }
-                        TextButton(onClick = { applyAppVolume(1.0f) }) { Text("100%") }
-                        TextButton(onClick = { applyAppVolume(2.0f) }) { Text("200%") }
-                        TextButton(onClick = { applyAppVolume(3.0f) }) { Text("300%") }
+                        TextButton(onClick = { applyAppVolume(0f) }) { Text("0%", fontSize = 12.sp) }
+                        TextButton(onClick = { applyAppVolume(1.0f) }) { Text("100%", fontSize = 12.sp) }
+                        TextButton(onClick = { applyAppVolume(2.0f) }) { Text("200%", fontSize = 12.sp) }
+                        TextButton(onClick = { applyAppVolume(3.0f) }) { Text("300%", fontSize = 12.sp) }
+                        TextButton(onClick = { applyAppVolume(5.0f) }) { Text("500%", fontSize = 12.sp) }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // 次の動画再生時に100%を超えていたら100%に戻す設定トグル
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(SurfaceElevated)
+                            .border(1.dp, CardBorder, RoundedCornerShape(12.dp))
+                            .clickable {
+                                val nextState = !resetVolumeOver100
+                                resetVolumeOver100 = nextState
+                                timerPrefs.edit().putBoolean("reset_volume_over_100", nextState).apply()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "次の動画再生時に100%へ戻す",
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "前回の音量が100%を超えていた場合、次の動画開始時に自動で100%にリセットします",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Switch(
+                            checked = resetVolumeOver100,
+                            onCheckedChange = { checked ->
+                                resetVolumeOver100 = checked
+                                timerPrefs.edit().putBoolean("reset_volume_over_100", checked).apply()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = ElectricBlueBright,
+                                uncheckedThumbColor = TextSecondary,
+                                uncheckedTrackColor = PureBlack
+                            )
+                        )
                     }
                 }
             },
             confirmButton = {
-                Button(onClick = { showVolumeSheet = false }) {
-                    Text("完了")
+                Button(
+                    onClick = { showVolumeSheet = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlueBright)
+                ) {
+                    Text("完了", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -1524,6 +1620,125 @@ fun OverlayVideoPlayer(
                 }
             },
             confirmButton = {}
+        )
+    }
+}
+
+/**
+ * 判定領域を大きく（高さ52dp）、トラックも太く（通常8dp / 操作時12dp）した高感度シークバー。
+ * タップ＆水平ドラッグのポインターイベントを完全消費するため、背面のスワイプ早送りが誤発動しない。
+ */
+@Composable
+private fun LargeInteractiveSeekbar(
+    progress: Float,
+    abStartRatio: Float?,
+    abEndRatio: Float?,
+    onDraggingChange: (Boolean) -> Unit,
+    onSeekRatio: (Float) -> Unit
+) {
+    var barWidthPx by remember { mutableFloatStateOf(1f) }
+    var isDragging by remember { mutableStateOf(false) }
+
+    val trackHeight by animateDpAsState(
+        targetValue = if (isDragging) 12.dp else 8.dp,
+        animationSpec = tween(150),
+        label = "TrackHeight"
+    )
+    val thumbSize by animateDpAsState(
+        targetValue = if (isDragging) 26.dp else 20.dp,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "ThumbSize"
+    )
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .onSizeChanged { size ->
+                barWidthPx = size.width.toFloat().coerceAtLeast(1f)
+            }
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    val ratio = (offset.x / barWidthPx).coerceIn(0f, 1f)
+                    onSeekRatio(ratio)
+                }
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { startOffset ->
+                        isDragging = true
+                        onDraggingChange(true)
+                        val ratio = (startOffset.x / barWidthPx).coerceIn(0f, 1f)
+                        onSeekRatio(ratio)
+                    },
+                    onDragEnd = {
+                        isDragging = false
+                        onDraggingChange(false)
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                        onDraggingChange(false)
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        val ratio = (change.position.x / barWidthPx).coerceIn(0f, 1f)
+                        onSeekRatio(ratio)
+                    }
+                )
+            },
+        contentAlignment = Alignment.CenterStart
+    ) {
+        val safeProgress = progress.coerceIn(0f, 1f)
+
+        // 背景トラック
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(trackHeight)
+                .clip(RoundedCornerShape(50))
+                .background(SurfaceElevated.copy(alpha = 0.9f))
+                .border(0.5.dp, CardBorder, RoundedCornerShape(50))
+        )
+
+        // 再生済みアクティブトラック
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(safeProgress)
+                .height(trackHeight)
+                .clip(RoundedCornerShape(50))
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(ElectricBlue, ElectricBlueGlow)
+                    )
+                )
+        )
+
+        // A-Bリピート区間マーカー表示
+        if (abStartRatio != null) {
+            val startX = (maxWidth * abStartRatio.coerceIn(0f, 1f)).coerceAtLeast(0.dp)
+            val endRatio = abEndRatio?.coerceIn(abStartRatio, 1f) ?: abStartRatio
+            val segmentWidth = (maxWidth * (endRatio - abStartRatio)).coerceAtLeast(4.dp)
+            Box(
+                modifier = Modifier
+                    .offset(x = startX)
+                    .width(segmentWidth)
+                    .height(trackHeight + 4.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.White.copy(alpha = 0.45f))
+            )
+        }
+
+        // 大型サム（つまみ）
+        val maxThumbOffset = (maxWidth - thumbSize).coerceAtLeast(0.dp)
+        val thumbOffset = maxThumbOffset * safeProgress
+        Box(
+            modifier = Modifier
+                .offset(x = thumbOffset)
+                .size(thumbSize)
+                .shadow(10.dp, CircleShape, spotColor = ElectricBlueGlow)
+                .clip(CircleShape)
+                .background(ElectricBlueGlow)
+                .border(2.5.dp, Color.White, CircleShape)
         )
     }
 }

@@ -22,11 +22,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.kooric.krcplayer.data.SecretVaultManager
 import com.kooric.krcplayer.ui.theme.ElectricBlue
 import com.kooric.krcplayer.ui.theme.SurfaceDark
 import com.kooric.krcplayer.ui.theme.SurfaceElevated
@@ -53,7 +53,7 @@ object ThumbnailCache {
     }
 
     suspend fun loadVideoThumbnail(context: Context, uri: Uri, path: String): Bitmap? = withContext(Dispatchers.IO) {
-        val cacheKey = uri.toString()
+        val cacheKey = if (path.isNotEmpty()) path else uri.toString()
         get(cacheKey)?.let { return@withContext it }
 
         var bitmap: Bitmap? = null
@@ -66,12 +66,17 @@ object ThumbnailCache {
             }
         }
 
-        // 2. MediaMetadataRetriever によるフレーム抽出 (シークレットフォルダ内のファイルやフォールバック用)
+        // 2. MediaMetadataRetriever によるフレーム抽出 (暗号化されたシークレット動画もオンザフライ復号で対応)
         if (bitmap == null) {
             val retriever = MediaMetadataRetriever()
             try {
-                if (path.isNotEmpty() && File(path).exists()) {
-                    retriever.setDataSource(path)
+                val file = if (path.isNotEmpty()) File(path) else null
+                if (file != null && file.exists()) {
+                    if (SecretVaultManager.isFileEncrypted(file)) {
+                        retriever.setDataSource(SecretVaultManager.createMediaDataSource(context, file))
+                    } else {
+                        retriever.setDataSource(path)
+                    }
                 } else {
                     retriever.setDataSource(context, uri)
                 }
@@ -87,11 +92,14 @@ object ThumbnailCache {
         }
 
         // 3. 最終フォールバック: ThumbnailUtils
-        if (bitmap == null && path.isNotEmpty() && File(path).exists()) {
-            try {
-                @Suppress("DEPRECATION")
-                bitmap = ThumbnailUtils.createVideoThumbnail(path, MediaStore.Images.Thumbnails.MINI_KIND)
-            } catch (_: Exception) {
+        if (bitmap == null && path.isNotEmpty()) {
+            val file = File(path)
+            if (file.exists() && !SecretVaultManager.isFileEncrypted(file)) {
+                try {
+                    @Suppress("DEPRECATION")
+                    bitmap = ThumbnailUtils.createVideoThumbnail(path, MediaStore.Images.Thumbnails.MINI_KIND)
+                } catch (_: Exception) {
+                }
             }
         }
 
@@ -110,7 +118,8 @@ fun VideoThumbnailImage(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    var bitmap by remember(uri) { mutableStateOf(ThumbnailCache.get(uri.toString())) }
+    val cacheKey = if (path.isNotEmpty()) path else uri.toString()
+    var bitmap by remember(cacheKey) { mutableStateOf(ThumbnailCache.get(cacheKey)) }
 
     LaunchedEffect(uri, path) {
         if (bitmap == null) {
